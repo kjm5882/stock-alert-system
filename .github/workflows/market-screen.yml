@@ -1,0 +1,44 @@
+name: 전체 종목 조건 스크리닝
+
+on:
+  workflow_dispatch:
+    inputs:
+      op_margin_min:
+        description: "최소 영업이익률(%) 예: 20"
+        required: true
+        default: "20"
+      per_max:
+        description: "최대 PER 예: 10"
+        required: true
+        default: "10"
+
+jobs:
+  screen-market:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 스크리닝 실행
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OP_MARGIN_MIN: ${{ inputs.op_margin_min }}
+          PER_MAX: ${{ inputs.per_max }}
+        run: python src/screener.py
+
+      - name: corp_code 캐시 저장
+        run: |
+          git config user.name "stock-alert-bot"
+          git config user.email "actions@github.com"
+          git add data/corp_codes.xml 2>/dev/null || true
+          git diff --quiet && git diff
