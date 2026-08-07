@@ -75,6 +75,18 @@ def _find_first_number_after(text: str, label: str, window: int = 200):
         return None
 
 
+def _find_net_income(text: str):
+    """
+    당기순이익은 '지배주주' 라벨이 붙은 줄을 우선 찾는다 (자회사 소수지분 제외).
+    없으면 일반 '당기순이익'으로 폴백한다.
+    """
+    for label in ["지배주주순이익", "지배기업소유주지분", "지배주주 당기순이익", "지배주주지분"]:
+        v = _find_first_number_after(text, label)
+        if v is not None:
+            return v
+    return _find_first_number_after(text, "당기순이익")
+
+
 def _find_unit(text: str):
     """
     문서 안에서 '(단위 : 억원)' 같은 단위 표기를 찾는다.
@@ -97,7 +109,7 @@ def parse_prelim_earnings(text: str) -> dict:
 
     revenue = _find_first_number_after(text, "매출액")
     op_income = _find_first_number_after(text, "영업이익")
-    net_income = _find_first_number_after(text, "당기순이익")
+    net_income = _find_net_income(text)
     unit = _find_unit(text)
 
     parsed = any(v is not None for v in [revenue, op_income, net_income])
