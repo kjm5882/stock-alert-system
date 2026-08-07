@@ -3,12 +3,8 @@
 # GitHub Actions에서 수동으로 1회 실행: python src/backfill_quarters.py
 #
 # 관심종목마다 최근 2개년치 정기공시(사업/반기/분기보고서)를 순서대로 가져와서
-# watchlist_monitor.py와 똑같은 로직(누적값에서 직전 분기를 빼는 방식)으로
-# 분기별 단일 순이익을 역산해 data/last_reports.json 에 채워 넣는다.
-#
-# 이미 있는 관심종목에 대해 TTM(최근 4개분기) 계산을 "1년 기다리지 않고"
-# 바로 가능하게 만들기 위한 초기화용 스크립트다. 여러 번 실행해도 안전하다
-# (같은 값으로 덮어쓸 뿐이라 중복 문제 없음).
+# watchlist_monitor.py와 똑같은 로직으로 분기별 단일 순이익을 역산해
+# data/last_reports.json 에 채워 넣는다.
 # ============================================================
 import sys
 import os
@@ -18,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.watchlist import WATCHLIST
 from src import dart_client, state, telegram_notify
-from src.watchlist_monitor import record_quarter_from_periodic, REPORT_CODE_INFO
+from src.watchlist_monitor import record_quarter_from_periodic
 
 
 def generate_periods():
@@ -44,7 +40,7 @@ def backfill_ticker(ticker: str, name: str, seen: dict) -> int:
             if not statement:
                 statement = dart_client.get_financial_statement(corp_code, year, report_code, fs_div="OFS")
             if not statement:
-                continue  # 아직 안 나온 보고서(미래) 이거나 데이터 없음
+                continue
 
             accounts = dart_client.extract_key_accounts(statement)
             net_income = accounts.get("당기순이익")
@@ -66,7 +62,7 @@ def run():
         return
 
     seen = state.load_state()
-    summary_lines = ["🧱 과거 분기 실적 백필 결과"]
+    summary_lines = ["🧱 과거 분기 실적 백필 결과 (지배주주 순이익 기준)"]
 
     for item in WATCHLIST:
         ticker = item["ticker"]
