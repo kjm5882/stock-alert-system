@@ -123,10 +123,24 @@ def get_financial_statement(corp_code: str, year: str, report_code: str, fs_div:
     return res.get("list", [])
 
 
-# 계정명이 회사마다 "당기순이익" / "당기순이익(손실)" / "반기순이익(손실)" 등으로
-# 조금씩 다르게 표기되기 때문에, 정확히 일치가 아니라 "포함되어 있는지"로 찾는다.
-# 우선순위가 높은(더 구체적인) 키워드를 먼저 검사한다.
-ACCOUNT_KEYWORD_MAP = {
+# ------------------------------------------------------------
+# 계정 매칭 전략
+# 1순위: account_id (IFRS/DART 표준 코드) - 회사와 무관하게 일관됨, 가장 신뢰도 높음
+# 2순위: account_nm 텍스트에 키워드가 "포함"되는지 - account_id를 못 찾은 경우의 보조 수단
+#
+# 표준계정과목이 아닌 회사(일부 특수업종 등)는 account_id가 다르게 잡힐 수 있어서
+# 2순위 보조 수단을 남겨두되, 1순위가 있으면 그걸 우선한다.
+# ------------------------------------------------------------
+ACCOUNT_ID_MAP = {
+    "매출액": ["ifrs-full_Revenue", "ifrs-full_RevenueFromContractsWithCustomers"],
+    "영업이익": ["dart_OperatingIncomeLoss"],
+    "당기순이익": ["ifrs-full_ProfitLoss"],
+    "자산총계": ["ifrs-full_Assets"],
+    "부채총계": ["ifrs-full_Liabilities"],
+    "자본총계": ["ifrs-full_Equity"],
+}
+
+ACCOUNT_TEXT_FALLBACK = {
     "매출액": ["매출액"],
     "영업이익": ["영업이익"],
     "당기순이익": ["당기순이익", "반기순이익", "분기순이익"],
@@ -139,22 +153,36 @@ ACCOUNT_KEYWORD_MAP = {
 def extract_key_accounts(statement_list: list) -> dict:
     """
     fnlttSinglAcntAll 응답에서 자주 쓰는 핵심 계정만 뽑아서 정리한다.
-    계정명은 "포함 여부"로 매칭한다 (회사마다 "당기순이익(손실)"처럼 표기가 조금씩 달라서).
+    account_id(표준코드)를 우선 사용하고, 없으면 계정명 텍스트로 보조 판단한다.
     """
-    targets = {k: None for k in ACCOUNT_KEYWORD_MAP}
+    targets = {k: None for k in ACCOUNT_ID_MAP}
 
+    # 1순위: account_id 매칭
     for row in statement_list:
-        name = row.get("account_nm", "").strip()
-        if not name:
-            continue
-
-        for target, keywords in ACCOUNT_KEYWORD_MAP.items():
+        account_id = row.get("account_id", "")
+        for target, ids in ACCOUNT_ID_MAP.items():
             if targets[target] is not None:
                 continue
-            if any(keyword in name for keyword in keywords):
+            if account_id in ids:
                 try:
                     targets[target] = int(row.get("thstrm_amount", "0").replace(",", ""))
                 except (ValueError, AttributeError):
                     pass
+
+    # 2순위: account_id로 못 찾은 항목만 텍스트로 보조 검색
+    remaining = [t for t, v in targets.items() if v is None]
+    if remaining:
+        for row in statement_list:
+            name = row.get("account_nm", "").strip()
+            if not name:
+                continue
+            for target in remaining:
+                if targets[target] is not None:
+                    continue
+                if any(keyword in name for keyword in ACCOUNT_TEXT_FALLBACK[target]):
+                    try:
+                        targets[target] = int(row.get("thstrm_amount", "0").replace(",", ""))
+                    except (ValueError, AttributeError):
+                        pass
 
     return targets
