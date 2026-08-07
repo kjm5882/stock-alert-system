@@ -1,8 +1,5 @@
 # ============================================================
 # DART (전자공시시스템) API 클라이언트
-# - 종목코드 <-> DART 고유번호(corp_code) 매핑
-# - 분기/연간 재무제표 조회
-# - 최근 공시 목록 조회 (신규 분기보고서 감지용)
 # ============================================================
 import os
 import io
@@ -39,7 +36,6 @@ def download_corp_code_map():
 def get_corp_code(ticker: str) -> str | None:
     xml_bytes = download_corp_code_map()
     root = ET.fromstring(xml_bytes)
-
     for item in root.findall("list"):
         stock_code = item.findtext("stock_code", "").strip()
         if stock_code == ticker:
@@ -50,7 +46,6 @@ def get_corp_code(ticker: str) -> str | None:
 def get_all_listed_corps() -> list:
     xml_bytes = download_corp_code_map()
     root = ET.fromstring(xml_bytes)
-
     result = []
     for item in root.findall("list"):
         stock_code = item.findtext("stock_code", "").strip()
@@ -77,12 +72,10 @@ def _search_disclosures(corp_code: str, bgn_de: str, end_de: str, pblntf_ty: str
         params["pblntf_detail_ty"] = pblntf_detail_ty
 
     res = requests.get(url, params=params, timeout=30).json()
-
     if res.get("status") == "013":
         return []
     if res.get("status") != "000":
         raise RuntimeError(f"DART API 오류: {res.get('status')} {res.get('message')}")
-
     return res.get("list", [])
 
 
@@ -114,27 +107,27 @@ def get_financial_statement(corp_code: str, year: str, report_code: str, fs_div:
         "fs_div": fs_div,
     }
     res = requests.get(url, params=params, timeout=30).json()
-
     if res.get("status") == "013":
         return []
     if res.get("status") != "000":
         raise RuntimeError(f"DART API 오류: {res.get('status')} {res.get('message')}")
-
     return res.get("list", [])
 
 
 # ------------------------------------------------------------
-# 계정 매칭 전략
-# 1순위: account_id (IFRS/DART 표준 코드) - 회사와 무관하게 일관됨, 가장 신뢰도 높음
-# 2순위: account_nm 텍스트에 키워드가 "포함"되는지 - account_id를 못 찾은 경우의 보조 수단
+# 계정 매칭 전략 (우선순위 기반)
 #
-# 표준계정과목이 아닌 회사(일부 특수업종 등)는 account_id가 다르게 잡힐 수 있어서
-# 2순위 보조 수단을 남겨두되, 1순위가 있으면 그걸 우선한다.
+# 각 항목마다 "우선순위가 높은 account_id부터" 문서 전체에서 찾는다.
+# 예: 당기순이익은 "지배주주 귀속분"을 1순위로, 없으면 전체 당기순이익으로 폴백.
+# account_id를 하나도 못 찾으면 텍스트 키워드로 최후 보조 검색한다.
 # ------------------------------------------------------------
-ACCOUNT_ID_MAP = {
+ACCOUNT_ID_PRIORITY = {
     "매출액": ["ifrs-full_Revenue", "ifrs-full_RevenueFromContractsWithCustomers"],
     "영업이익": ["dart_OperatingIncomeLoss"],
-    "당기순이익": ["ifrs-full_ProfitLoss"],
+    "당기순이익": [
+        "ifrs-full_ProfitLossAttributableToOwnersOfParent",  # 1순위: 지배주주 귀속 당기순이익
+        "ifrs-full_ProfitLoss",                                # 2순위: 전체(연결) 당기순이익
+    ],
     "자산총계": ["ifrs-full_Assets"],
     "부채총계": ["ifrs-full_Liabilities"],
     "자본총계": ["ifrs-full_Equity"],
@@ -143,33 +136,41 @@ ACCOUNT_ID_MAP = {
 ACCOUNT_TEXT_FALLBACK = {
     "매출액": ["매출액"],
     "영업이익": ["영업이익"],
-    "당기순이익": ["당기순이익", "반기순이익", "분기순이익"],
+    "당기순이익": ["지배주주", "당기순이익", "반기순이익", "분기순이익"],
     "자산총계": ["자산총계"],
     "부채총계": ["부채총계"],
     "자본총계": ["자본총계"],
 }
 
 
+def _parse_amount(row):
+    try:
+        return int(row.get("thstrm_amount", "0").replace(",", ""))
+    except (ValueError, AttributeError):
+        return None
+
+
 def extract_key_accounts(statement_list: list) -> dict:
     """
-    fnlttSinglAcntAll 응답에서 자주 쓰는 핵심 계정만 뽑아서 정리한다.
-    account_id(표준코드)를 우선 사용하고, 없으면 계정명 텍스트로 보조 판단한다.
+    fnlttSinglAcntAll 응답에서 핵심 계정을 뽑는다.
+    account_id 우선순위 리스트를 순서대로 문서 전체에서 찾고,
+    다 못 찾으면 텍스트 키워드로 보조 검색한다.
     """
-    targets = {k: None for k in ACCOUNT_ID_MAP}
+    targets = {k: None for k in ACCOUNT_ID_PRIORITY}
 
-    # 1순위: account_id 매칭
-    for row in statement_list:
-        account_id = row.get("account_id", "")
-        for target, ids in ACCOUNT_ID_MAP.items():
-            if targets[target] is not None:
-                continue
-            if account_id in ids:
-                try:
-                    targets[target] = int(row.get("thstrm_amount", "0").replace(",", ""))
-                except (ValueError, AttributeError):
-                    pass
+    for target, id_priority in ACCOUNT_ID_PRIORITY.items():
+        for account_id in id_priority:
+            found = False
+            for row in statement_list:
+                if row.get("account_id") == account_id:
+                    amount = _parse_amount(row)
+                    if amount is not None:
+                        targets[target] = amount
+                        found = True
+                        break
+            if found:
+                break  # 이 target은 이미 찾았으니 다음 우선순위 id는 시도하지 않음
 
-    # 2순위: account_id로 못 찾은 항목만 텍스트로 보조 검색
     remaining = [t for t, v in targets.items() if v is None]
     if remaining:
         for row in statement_list:
@@ -180,9 +181,8 @@ def extract_key_accounts(statement_list: list) -> dict:
                 if targets[target] is not None:
                     continue
                 if any(keyword in name for keyword in ACCOUNT_TEXT_FALLBACK[target]):
-                    try:
-                        targets[target] = int(row.get("thstrm_amount", "0").replace(",", ""))
-                    except (ValueError, AttributeError):
-                        pass
+                    amount = _parse_amount(row)
+                    if amount is not None:
+                        targets[target] = amount
 
     return targets
