@@ -1,0 +1,50 @@
+name: 계정 진단(디버그)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "종목코드 (기본: SK하이닉스)"
+        required: false
+        default: "000660"
+      year:
+        description: "사업연도"
+        required: false
+        default: "2025"
+      report_code:
+        description: "11013(1분기)/11012(반기)/11014(3분기)/11011(사업보고서)"
+        required: false
+        default: "11013"
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 진단 실행
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEBUG_TICKER: ${{ inputs.ticker }}
+          DEBUG_YEAR: ${{ inputs.year }}
+          DEBUG_REPORT_CODE: ${{ inputs.report_code }}
+        run: python src/debug_accounts.py
+
+      - name: corp_code 캐시 저장
+        run: |
+          git config user.name "stock-alert-bot"
+          git config user.email "actions@github.com"
+          git add data/corp_codes.xml 2>/dev/null || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "chore: DART corp_code 캐시 갱신"
+          git push || true
