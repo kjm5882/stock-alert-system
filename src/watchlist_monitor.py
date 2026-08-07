@@ -2,13 +2,7 @@
 # 관심종목 신규 공시 감지 & 알림
 # GitHub Actions가 주기적으로 이 파일을 실행: python src/watchlist_monitor.py
 #
-# 두 종류의 공시를 모두 감지한다:
-# 1. 잠정실적(공정공시) - 정식 보고서보다 먼저 나오는 실적 예고.
-# 2. 정식 분기/반기/사업보고서 - 표준 API로 정확한 재무제표를 가져와 분석.
-#
-# 두 경우 모두, 매번 "분기별 단일 실적"을 data/last_reports.json 에 누적 저장해서,
-# 최근 4개 분기가 모이면 TTM(Trailing Twelve Months) 기준 "밸류에이션(잠정)"을
-# 직접 계산해 KRX가 제공하는 "밸류에이션(확정, 전년도 사업보고서 기준)"과 나란히 보여준다.
+# ※ 당기순이익은 "지배주주 귀속 당기순이익" 기준입니다 (자회사 소수지분 제외).
 # ============================================================
 import re
 import sys
@@ -20,17 +14,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.watchlist import WATCHLIST
 from src import dart_client, krx_client, metrics, telegram_notify, state, prelim_earnings
 
-# report_code -> (분기번호, 이 report_code 직전에 나오는 report_code / 없으면 None)
-REPORT_CODE_INFO = {
-    "11013": (1, None),      # 1분기보고서 (누적 = 단일 1분기)
-    "11012": (2, "11013"),   # 반기보고서 (누적 = 1+2분기)
-    "11014": (3, "11012"),   # 3분기보고서 (누적 = 1+2+3분기)
-    "11011": (4, "11014"),   # 사업보고서 (누적 = 1+2+3+4분기, 연간 전체)
-}
+REPORT_CODE_QUARTER = {"11013": 1, "11012": 2, "11014": 3, "11011": 4}
 
 
 def parse_report_period(report_nm: str, rcept_dt: str):
-    """공시 제목과 접수일자로부터 (사업연도, reprt_code)를 추정한다."""
     match = re.search(r"\((\d{4})\.(\d{2})\)", report_nm)
     if match:
         year, month = match.group(1), match.group(2)
@@ -49,7 +36,6 @@ def parse_report_period(report_nm: str, rcept_dt: str):
 
 
 def guess_prelim_quarter(report_nm: str, rcept_dt: str):
-    """잠정실적 공시 제목/접수일에서 (사업연도, 분기번호 1~4)를 추정한다."""
     q_match = re.search(r"(\d{4})년\s*(\d)\s*분기", report_nm)
     if q_match:
         return q_match.group(1), int(q_match.group(2))
@@ -65,29 +51,33 @@ def guess_prelim_quarter(report_nm: str, rcept_dt: str):
 
 
 def record_quarter_from_periodic(seen: dict, ticker: str, year: str, report_code: str, cumulative_net_income):
-    """정기공시의 '누적' 순이익에서 직전 분기를 빼 '단일 분기' 순이익을 역산해 저장한다."""
+    """
+    정기공시의 '누적' 순이익에서, 이미 저장되어 있는 그 해 이전 분기들의 '단일 분기'
+    합계를 빼서 이번 분기의 단일 순이익을 역산한다.
+
+    안전장치: 이전 분기들이 하나라도 저장되어 있지 않으면 역산하지 않고 건너뛴다.
+    (예: 3분기 데이터가 없는 상태에서 연간보고서를 억지로 "연간 - 0"으로 계산해
+    연간 전체 금액이 그대로 4분기 값으로 잘못 들어가는 사고를 방지한다.)
+    """
     if cumulative_net_income is None:
         return
 
-    quarter_num, prior_code = REPORT_CODE_INFO[report_code]
-    state.set_cumulative(seen, ticker, f"{year}_{report_code}", cumulative_net_income)
+    quarter_num = REPORT_CODE_QUARTER[report_code]
 
-    if prior_code is None:
+    if quarter_num == 1:
         standalone = cumulative_net_income
     else:
-        prior_cumulative = state.get_cumulative(seen, ticker, f"{year}_{prior_code}")
-        if prior_cumulative is None:
-            return  # 직전 누적값을 몰라서 단일 분기를 역산할 수 없음 (다음 분기부터 가능)
-        standalone = cumulative_net_income - prior_cumulative
+        existing = state.get_quarters_for_ticker(seen, ticker)
+        needed_keys = [f"{year}Q{i}" for i in range(1, quarter_num)]
+        if not all(k in existing for k in needed_keys):
+            return  # 이전 분기 데이터가 아직 없어 역산 불가 - 건너뜀 (틀린 값 저장 방지)
+        prior_sum = sum(existing[k] for k in needed_keys)
+        standalone = cumulative_net_income - prior_sum
 
     state.set_quarter(seen, ticker, f"{year}Q{quarter_num}", standalone, source="periodic")
 
 
 def compute_ttm_valuation(seen: dict, ticker: str, market_cap):
-    """
-    최근 4개 분기(단일 실적) 데이터가 모였으면 TTM 순이익과 PER을 계산한다.
-    부족하면 (None, 안내문구)를 반환한다.
-    """
     last4 = state.get_last_n_quarters(seen, ticker, n=4)
 
     if len(last4) < 4:
@@ -104,10 +94,10 @@ def compute_ttm_valuation(seen: dict, ticker: str, market_cap):
 
 
 def format_valuation_sections(ttm_result, ttm_note, official_valuation: dict) -> list:
-    lines = ["— 밸류에이션(잠정, 최근 4개분기 TTM 직접계산) —"]
+    lines = ["— 밸류에이션(잠정, 최근 4개분기 TTM · 지배주주 순이익 기준) —"]
     if ttm_result:
         lines.append(f"  기준 분기: {ttm_result['range']}")
-        lines.append(f"  TTM 순이익: {ttm_result['ttm_net_income']:,.0f}원")
+        lines.append(f"  TTM 순이익(지배주주): {ttm_result['ttm_net_income']:,.0f}원")
         lines.append(f"  PER(잠정): {ttm_result['per_ttm']:.2f}")
     else:
         lines.append(f"  {ttm_note}")
@@ -124,7 +114,6 @@ def format_valuation_sections(ttm_result, ttm_note, official_valuation: dict) ->
 
 
 def notify_periodic_report(ticker: str, name: str, corp_code: str, disclosure: dict, seen: dict):
-    """정식 분기/반기/사업보고서: 표준 API로 정확한 수치를 가져와 분석."""
     year, report_code = parse_report_period(disclosure.get("report_nm", ""), disclosure.get("rcept_dt", ""))
 
     statement = dart_client.get_financial_statement(corp_code, year, report_code)
@@ -143,7 +132,7 @@ def notify_periodic_report(ticker: str, name: str, corp_code: str, disclosure: d
 
     link = prelim_earnings.build_viewer_url(disclosure.get("rcept_no", ""))
 
-    lines = ["📗 정식 보고서 공시 (확정치)", f"{name}({ticker})"]
+    lines = ["📗 정식 보고서 공시 (확정치)", f"{name}({ticker})", "※ 당기순이익은 지배주주 귀속 기준"]
     lines.append("— 실적 —")
     for k, v in accounts.items():
         if v is not None:
@@ -159,14 +148,13 @@ def notify_periodic_report(ticker: str, name: str, corp_code: str, disclosure: d
 
 
 def notify_prelim_earnings(ticker: str, name: str, disclosure: dict, seen: dict):
-    """잠정실적 공정공시: 원문 파싱을 시도하고, 항상 링크를 함께 보낸다."""
     rcept_no = disclosure.get("rcept_no", "")
     link = prelim_earnings.build_viewer_url(rcept_no)
 
     text = prelim_earnings.fetch_document_text(rcept_no)
     parsed = prelim_earnings.parse_prelim_earnings(text)
 
-    lines = [f"⚡ 잠정실적 공시 감지: {name}({ticker})"]
+    lines = [f"⚡ 잠정실적 공시 감지: {name}({ticker})", "※ 당기순이익은 지배주주 귀속 기준(가능한 경우)"]
 
     if not parsed["parsed"]:
         lines.append("자동 숫자 추출에 실패했습니다. 아래 원문 링크에서 직접 확인해주세요.")
@@ -193,7 +181,6 @@ def notify_prelim_earnings(ticker: str, name: str, disclosure: dict, seen: dict)
         if v is not None:
             lines.append(f"  {k}: {v}")
 
-    # 단위를 알면 이번 분기 실적을 분기별 기록에 반영 (TTM 계산 재료로 사용)
     net_income_won = prelim_earnings.to_won(parsed["당기순이익"], unit)
     year, quarter_num = guess_prelim_quarter(disclosure.get("report_nm", ""), disclosure.get("rcept_dt", ""))
     if net_income_won is not None and year and quarter_num:
