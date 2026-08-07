@@ -2,6 +2,7 @@
 # DART (전자공시시스템) API 클라이언트
 # - 종목코드 <-> DART 고유번호(corp_code) 매핑
 # - 분기/연간 재무제표 조회
+# - 최근 공시 목록 조회 (신규 분기보고서 감지용)
 # ============================================================
 import os
 import io
@@ -11,6 +12,8 @@ import requests
 
 DART_API_KEY = os.environ.get("DART_API_KEY")
 CORP_CODE_CACHE = "data/corp_codes.xml"
+
+QUARTERLY_REPORT_KEYWORDS = ["분기보고서", "반기보고서", "사업보고서"]
 
 
 def download_corp_code_map():
@@ -46,6 +49,53 @@ def get_corp_code(ticker: str) -> str | None:
         if stock_code == ticker:
             return item.findtext("corp_code")
     return None
+
+
+def get_all_listed_corps() -> list:
+    """corp_code 매핑 파일에서 실제 상장된(종목코드가 있는) 회사만 리스트로 반환한다."""
+    xml_bytes = download_corp_code_map()
+    root = ET.fromstring(xml_bytes)
+
+    result = []
+    for item in root.findall("list"):
+        stock_code = item.findtext("stock_code", "").strip()
+        if stock_code:
+            result.append({
+                "ticker": stock_code,
+                "name": item.findtext("corp_name", "").strip(),
+                "corp_code": item.findtext("corp_code"),
+            })
+    return result
+
+
+def get_recent_disclosures(corp_code: str, bgn_de: str, end_de: str) -> list:
+    """
+    특정 기업의 최근 정기공시(분기/반기/사업보고서) 목록을 가져온다.
+    bgn_de, end_de: YYYYMMDD 형식
+    """
+    url = "https://opendart.fss.or.kr/api/list.json"
+    params = {
+        "crtfc_key": DART_API_KEY,
+        "corp_code": corp_code,
+        "bgn_de": bgn_de,
+        "end_de": end_de,
+        "pblntf_ty": "A",  # 정기공시 (사업/반기/분기보고서 포함)
+        "page_count": 20,
+    }
+    res = requests.get(url, params=params, timeout=30).json()
+
+    if res.get("status") == "013":
+        return []  # 해당 기간 공시 없음
+    if res.get("status") != "000":
+        raise RuntimeError(f"DART API 오류: {res.get('status')} {res.get('message')}")
+
+    all_items = res.get("list", [])
+    # 사업/반기/분기보고서만 필터링 (정정보고서 등 기타 정기공시 제외하고 싶으면 여기서 조정)
+    quarterly = [
+        item for item in all_items
+        if any(keyword in item.get("report_nm", "") for keyword in QUARTERLY_REPORT_KEYWORDS)
+    ]
+    return quarterly
 
 
 def get_financial_statement(corp_code: str, year: str, report_code: str, fs_div: str = "CFS"):
