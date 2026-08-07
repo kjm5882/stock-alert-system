@@ -14,6 +14,7 @@ DART_API_KEY = os.environ.get("DART_API_KEY")
 CORP_CODE_CACHE = "data/corp_codes.xml"
 
 QUARTERLY_REPORT_KEYWORDS = ["분기보고서", "반기보고서", "사업보고서"]
+PRELIM_EARNINGS_KEYWORDS = ["잠정실적", "손익구조", "영업(잠정)실적", "매출액또는손익구조"]
 
 
 def download_corp_code_map():
@@ -68,20 +69,19 @@ def get_all_listed_corps() -> list:
     return result
 
 
-def get_recent_disclosures(corp_code: str, bgn_de: str, end_de: str) -> list:
-    """
-    특정 기업의 최근 정기공시(분기/반기/사업보고서) 목록을 가져온다.
-    bgn_de, end_de: YYYYMMDD 형식
-    """
+def _search_disclosures(corp_code: str, bgn_de: str, end_de: str, pblntf_ty: str, pblntf_detail_ty: str = None) -> list:
     url = "https://opendart.fss.or.kr/api/list.json"
     params = {
         "crtfc_key": DART_API_KEY,
         "corp_code": corp_code,
         "bgn_de": bgn_de,
         "end_de": end_de,
-        "pblntf_ty": "A",  # 정기공시 (사업/반기/분기보고서 포함)
+        "pblntf_ty": pblntf_ty,
         "page_count": 20,
     }
+    if pblntf_detail_ty:
+        params["pblntf_detail_ty"] = pblntf_detail_ty
+
     res = requests.get(url, params=params, timeout=30).json()
 
     if res.get("status") == "013":
@@ -89,13 +89,35 @@ def get_recent_disclosures(corp_code: str, bgn_de: str, end_de: str) -> list:
     if res.get("status") != "000":
         raise RuntimeError(f"DART API 오류: {res.get('status')} {res.get('message')}")
 
-    all_items = res.get("list", [])
-    # 사업/반기/분기보고서만 필터링 (정정보고서 등 기타 정기공시 제외하고 싶으면 여기서 조정)
-    quarterly = [
-        item for item in all_items
-        if any(keyword in item.get("report_nm", "") for keyword in QUARTERLY_REPORT_KEYWORDS)
-    ]
-    return quarterly
+    return res.get("list", [])
+
+
+def get_recent_disclosures(corp_code: str, bgn_de: str, end_de: str) -> list:
+    """
+    특정 기업의 최근 공시 중, 우리가 알림을 보낼 만한 두 종류를 찾아 합쳐서 반환한다.
+    - 정식 정기공시: 분기보고서 / 반기보고서 / 사업보고서 (kind="periodic")
+    - 잠정실적 공정공시: 정식 보고서보다 먼저 나오는 실적 예고 성격 (kind="prelim")
+
+    각 항목에 "kind" 키를 추가해서 반환하므로, 호출하는 쪽에서 이 값으로
+    분석 방식을 다르게 처리하면 된다.
+    """
+    results = []
+
+    # 1) 정기공시(사업/반기/분기보고서)
+    periodic_items = _search_disclosures(corp_code, bgn_de, end_de, pblntf_ty="A")
+    for item in periodic_items:
+        if any(keyword in item.get("report_nm", "") for keyword in QUARTERLY_REPORT_KEYWORDS):
+            item["kind"] = "periodic"
+            results.append(item)
+
+    # 2) 공정공시 중 잠정실적 성격의 공시
+    fair_items = _search_disclosures(corp_code, bgn_de, end_de, pblntf_ty="I", pblntf_detail_ty="I001")
+    for item in fair_items:
+        if any(keyword in item.get("report_nm", "") for keyword in PRELIM_EARNINGS_KEYWORDS):
+            item["kind"] = "prelim"
+            results.append(item)
+
+    return results
 
 
 def get_financial_statement(corp_code: str, year: str, report_code: str, fs_div: str = "CFS"):
