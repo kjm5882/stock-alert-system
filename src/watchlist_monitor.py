@@ -50,29 +50,31 @@ def guess_prelim_quarter(report_nm: str, rcept_dt: str):
     return None, None
 
 
-def record_quarter_from_periodic(seen: dict, ticker: str, year: str, report_code: str, cumulative_net_income):
+def record_quarter_from_periodic(seen: dict, ticker: str, year: str, report_code: str, reported_net_income):
     """
-    정기공시의 '누적' 순이익에서, 이미 저장되어 있는 그 해 이전 분기들의 '단일 분기'
-    합계를 빼서 이번 분기의 단일 순이익을 역산한다.
+    DART 정기공시의 '당기' 순이익 값을 분기별 단일 실적으로 저장한다.
 
-    안전장치: 이전 분기들이 하나라도 저장되어 있지 않으면 역산하지 않고 건너뛴다.
-    (예: 3분기 데이터가 없는 상태에서 연간보고서를 억지로 "연간 - 0"으로 계산해
-    연간 전체 금액이 그대로 4분기 값으로 잘못 들어가는 사고를 방지한다.)
+    핵심 사실(실제 SK하이닉스 데이터로 검증 완료):
+    - 1분기보고서(11013)/반기보고서(11012)/3분기보고서(11014)의 '당기' 금액은
+      이미 "해당 분기 하나(3개월)"만의 값이다 (반기보고서라고 해서 1~6월 누적이 아니라
+      2분기 3개월 단독 값이 들어있음). 그래서 뺄셈 없이 그대로 저장하면 된다.
+    - 사업보고서(11011)만 유일하게 "연간 전체(1~12월) 누적" 값이라서,
+      4분기 단독 값을 구하려면 연간 총액에서 1~3분기 합을 빼야 한다.
     """
-    if cumulative_net_income is None:
+    if reported_net_income is None:
         return
 
     quarter_num = REPORT_CODE_QUARTER[report_code]
 
-    if quarter_num == 1:
-        standalone = cumulative_net_income
-    else:
+    if quarter_num in (1, 2, 3):
+        standalone = reported_net_income
+    else:  # quarter_num == 4 (사업보고서, 연간 누적)
         existing = state.get_quarters_for_ticker(seen, ticker)
-        needed_keys = [f"{year}Q{i}" for i in range(1, quarter_num)]
+        needed_keys = [f"{year}Q{i}" for i in range(1, 4)]
         if not all(k in existing for k in needed_keys):
-            return  # 이전 분기 데이터가 아직 없어 역산 불가 - 건너뜀 (틀린 값 저장 방지)
+            return  # 1~3분기 데이터가 아직 없어 4분기 역산 불가 - 건너뜀
         prior_sum = sum(existing[k] for k in needed_keys)
-        standalone = cumulative_net_income - prior_sum
+        standalone = reported_net_income - prior_sum
 
     state.set_quarter(seen, ticker, f"{year}Q{quarter_num}", standalone, source="periodic")
 
