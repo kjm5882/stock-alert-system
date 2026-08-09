@@ -121,25 +121,39 @@ def get_financial_statement(corp_code: str, year: str, report_code: str, fs_div:
 # 예: 당기순이익은 "지배주주 귀속분"을 1순위로, 없으면 전체 당기순이익으로 폴백.
 # account_id를 하나도 못 찾으면 텍스트 키워드로 최후 보조 검색한다.
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# 계정 매칭 전략 (우선순위 + 재무제표 구분(sj_div) 제한)
+#
+# 실제 DART 응답을 직접 확인해보니 아래 두 가지 함정이 있었다:
+# 1. account_id가 "손익계산서(IS/CIS)"뿐 아니라 "자본변동표(SCE)"에도
+#    지분별로 여러 번 등장해서, 리스트 순서에 따라 엉뚱한 값을 집어올 수 있다.
+#    -> 매출/영업이익/순이익은 sj_div가 IS 또는 CIS인 행만 본다.
+# 2. "주당순이익(EPS)" 같은 항목이 "분기순이익" 등의 텍스트를 부분 포함하고 있어서
+#    텍스트 기반 보조검색에서 잘못 걸릴 수 있다 (예: "기본주당분기순이익").
+#    -> "주당"이 들어간 행은 텍스트 매칭에서 아예 제외한다.
+# ------------------------------------------------------------
+IS_LIKE_DIVISIONS = ("IS", "CIS")
+BS_LIKE_DIVISIONS = ("BS",)
+
 ACCOUNT_ID_PRIORITY = {
-    "매출액": ["ifrs-full_Revenue", "ifrs-full_RevenueFromContractsWithCustomers"],
-    "영업이익": ["dart_OperatingIncomeLoss"],
-    "당기순이익": [
-        "ifrs-full_ProfitLossAttributableToOwnersOfParent",  # 1순위: 지배주주 귀속 당기순이익
-        "ifrs-full_ProfitLoss",                                # 2순위: 전체(연결) 당기순이익
-    ],
-    "자산총계": ["ifrs-full_Assets"],
-    "부채총계": ["ifrs-full_Liabilities"],
-    "자본총계": ["ifrs-full_Equity"],
+    "매출액": {"ids": ["ifrs-full_Revenue", "ifrs-full_RevenueFromContractsWithCustomers"], "sj_div": IS_LIKE_DIVISIONS},
+    "영업이익": {"ids": ["dart_OperatingIncomeLoss"], "sj_div": IS_LIKE_DIVISIONS},
+    "당기순이익": {
+        "ids": ["ifrs-full_ProfitLossAttributableToOwnersOfParent", "ifrs-full_ProfitLoss"],
+        "sj_div": IS_LIKE_DIVISIONS,
+    },
+    "자산총계": {"ids": ["ifrs-full_Assets"], "sj_div": BS_LIKE_DIVISIONS},
+    "부채총계": {"ids": ["ifrs-full_Liabilities"], "sj_div": BS_LIKE_DIVISIONS},
+    "자본총계": {"ids": ["ifrs-full_Equity"], "sj_div": BS_LIKE_DIVISIONS},
 }
 
 ACCOUNT_TEXT_FALLBACK = {
-    "매출액": ["매출액"],
-    "영업이익": ["영업이익"],
-    "당기순이익": ["지배주주", "당기순이익", "반기순이익", "분기순이익"],
-    "자산총계": ["자산총계"],
-    "부채총계": ["부채총계"],
-    "자본총계": ["자본총계"],
+    "매출액": {"keywords": ["매출액"], "sj_div": IS_LIKE_DIVISIONS},
+    "영업이익": {"keywords": ["영업이익"], "sj_div": IS_LIKE_DIVISIONS},
+    "당기순이익": {"keywords": ["지배주주", "당기순이익", "반기순이익", "분기순이익"], "sj_div": IS_LIKE_DIVISIONS},
+    "자산총계": {"keywords": ["자산총계"], "sj_div": BS_LIKE_DIVISIONS},
+    "부채총계": {"keywords": ["부채총계"], "sj_div": BS_LIKE_DIVISIONS},
+    "자본총계": {"keywords": ["자본총계"], "sj_div": BS_LIKE_DIVISIONS},
 }
 
 
@@ -153,15 +167,17 @@ def _parse_amount(row):
 def extract_key_accounts(statement_list: list) -> dict:
     """
     fnlttSinglAcntAll 응답에서 핵심 계정을 뽑는다.
-    account_id 우선순위 리스트를 순서대로 문서 전체에서 찾고,
-    다 못 찾으면 텍스트 키워드로 보조 검색한다.
+    - account_id 우선순위대로 찾되, 반드시 해당 항목에 맞는 재무제표 구분(sj_div) 안에서만 찾는다.
+    - 그래도 못 찾으면 텍스트 키워드로 보조 검색하되, "주당"이 포함된 행(EPS 등)은 제외한다.
     """
     targets = {k: None for k in ACCOUNT_ID_PRIORITY}
 
-    for target, id_priority in ACCOUNT_ID_PRIORITY.items():
-        for account_id in id_priority:
+    for target, cfg in ACCOUNT_ID_PRIORITY.items():
+        for account_id in cfg["ids"]:
             found = False
             for row in statement_list:
+                if row.get("sj_div") not in cfg["sj_div"]:
+                    continue
                 if row.get("account_id") == account_id:
                     amount = _parse_amount(row)
                     if amount is not None:
@@ -169,18 +185,21 @@ def extract_key_accounts(statement_list: list) -> dict:
                         found = True
                         break
             if found:
-                break  # 이 target은 이미 찾았으니 다음 우선순위 id는 시도하지 않음
+                break
 
     remaining = [t for t, v in targets.items() if v is None]
     if remaining:
         for row in statement_list:
             name = row.get("account_nm", "").strip()
-            if not name:
+            if not name or "주당" in name:
                 continue
             for target in remaining:
                 if targets[target] is not None:
                     continue
-                if any(keyword in name for keyword in ACCOUNT_TEXT_FALLBACK[target]):
+                cfg = ACCOUNT_TEXT_FALLBACK[target]
+                if row.get("sj_div") not in cfg["sj_div"]:
+                    continue
+                if any(keyword in name for keyword in cfg["keywords"]):
                     amount = _parse_amount(row)
                     if amount is not None:
                         targets[target] = amount
