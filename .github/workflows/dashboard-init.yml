@@ -1,0 +1,36 @@
+name: 대시보드 초기 구축
+
+on:
+  workflow_dispatch:
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 초기 구축 실행
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        run: python src/dashboard_init.py
+
+      - name: 결과 커밋
+        run: |
+          git config user.name "stock-alert-bot"
+          git config user.email "actions@github.com"
+          git add data/corp_codes.xml docs/data/dashboard.json docs/data/dashboard_quarters.json 2>/dev/null || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "chore: 대시보드 초기 구축"
+          git push || true
