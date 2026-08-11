@@ -18,19 +18,19 @@ import os
 STATE_FILE = "data/last_reports.json"
 
 
-def load_state() -> dict:
-    if not os.path.exists(STATE_FILE):
+def load_state(path: str = STATE_FILE) -> dict:
+    if not os.path.exists(path):
         return {"processed": {}, "quarters": {}}
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     data.setdefault("processed", {})
     data.setdefault("quarters", {})
     return data
 
 
-def save_state(state: dict):
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+def save_state(state: dict, path: str = STATE_FILE):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
