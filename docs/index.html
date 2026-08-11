@@ -36,7 +36,7 @@
     border: 1px solid var(--border);
     border-radius: 10px;
   }
-  table { border-collapse: collapse; width: 100%; min-width: 900px; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; min-width: 1020px; font-size: 13px; }
   thead th {
     background: #1d2129;
     color: var(--muted);
@@ -61,89 +61,11 @@
     color: var(--muted);
     font-size: 12px;
     white-space: normal;
-    max-width: 260px;
-    min-width: 180px;
+    max-width: 240px;
+    min-width: 160px;
   }
   tbody tr:hover { background: #1b1f28; }
   .neg { color: var(--up); }
-  .muted { color: var(--muted); }
-  .footer-note { color: var(--muted); font-size: 12px; margin-top: 24px; line-height: 1.6; }
-  .loading { color: var(--muted); padding: 40px; text-align: center; }
-</style>
-</head>
-<body>
-  <h1>📟 반도체 중소형주 대시보드</h1>
-  <div class="updated" id="updated">불러오는 중...</div>
-
-  <div id="content">
-    <div class="loading">데이터를 불러오는 중입니다...</div>
-  </div>
-
-  <div class="footer-note">
-    ※ 당기순이익은 지배주주 귀속 기준(가능한 경우), 없으면 총액 폴백<br>
-    ※ PER(잠정)은 최근 4개분기(TTM) 지배주주 순이익 기준 직접 계산값입니다.<br>
-    ※ PBR은 최신 정기보고서의 자본총계 기준 직접 계산값입니다 (KRX 트레일링 값 아님).<br>
-    ※ 업데이트는 각 종목의 정식 분기/반기/사업보고서가 새로 공시될 때 자동 반영됩니다.
-  </div>
-
-<script>
-const won = (v) => v == null ? "-" : (v / 100000000).toLocaleString("ko-KR", {maximumFractionDigits: 1}) + "억";
-const pct = (v) => v == null ? "-" : v.toLocaleString("ko-KR", {maximumFractionDigits: 2}) + "%";
-const num = (v, digits=2) => v == null ? "-" : v.toLocaleString("ko-KR", {maximumFractionDigits: digits});
-const cls = (v) => (typeof v === "number" && v < 0) ? "neg" : "";
-
-function renderTable(stocks) {
-  const rows = stocks.map(s => {
-    if (s.error) {
-      return `<tr>
-        <td>${s.name}<div class="muted" style="font-weight:400;font-size:11px">${s.ticker}</div></td>
-        <td>${s.business ?? ""}</td>
-        <td colspan="8" class="muted">${s.error}</td>
-      </tr>`;
-    }
-    return `<tr>
-      <td>${s.name}<div class="muted" style="font-weight:400;font-size:11px">${s.ticker} · ${s["기준보고서"] ?? ""}</div></td>
-      <td>${s.business ?? ""}</td>
-      <td class="${cls(s.매출액)}">${won(s.매출액)}</td>
-      <td class="${cls(s.영업이익)}">${won(s.영업이익)}</td>
-      <td class="${cls(s.당기순이익)}">${won(s.당기순이익)}</td>
-      <td>${pct(s.영업이익률)}</td>
-      <td>${pct(s.부채비율)}</td>
-      <td title="${s.PER_TTM_기준분기 ?? s.PER_비고 ?? ''}">${num(s.PER_TTM)}</td>
-      <td>${num(s.PBR)}</td>
-      <td>${won(s.시가총액)}</td>
-    </tr>`;
-  }).join("");
-
-  return `<div class="table-wrap"><table>
-    <thead><tr>
-      <th>종목</th><th>주요사업</th><th>매출액</th><th>영업이익</th><th>당기순이익</th>
-      <th>영업이익률</th><th>부채비율</th><th>PER(잠정,TTM)</th><th>PBR</th><th>시가총액</th>
-    </tr></thead>
-    <tbody>${rows}</tbody>
-  </table></div>`;
-}
-
-fetch("./data/dashboard.json")
-  .then(r => r.json())
-  .then(data => {
-    document.getElementById("updated").textContent =
-      "마지막 업데이트: " + new Date(data.updated_at).toLocaleString("ko-KR");
-
-    const stocks = data.stocks || [];
-    const jeon = stocks.filter(s => s.category === "전공정");
-    const hu = stocks.filter(s => s.category === "후공정");
-
-    let html = "";
-    html += `<h2 class="section">전공정 (${jeon.length})</h2>` + renderTable(jeon);
-    html += `<h2 class="section">후공정 (${hu.length})</h2>` + renderTable(hu);
-
-    document.getElementById("content").innerHTML = html;
-  })
-  .catch(err => {
-    document.getElementById("content").innerHTML =
-      `<div class="loading">데이터 로딩 실패: ${err}<br>data/dashboard.json 파일이 아직 생성되지 않았을 수 있습니다.</div>`;
-  });
-</script>
-</body>
-</html>
+  .pos { color: var(--up); }
+  .down { color: var(--down); }
+  .muted { color:
