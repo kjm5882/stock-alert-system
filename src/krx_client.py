@@ -1,25 +1,23 @@
 # ============================================================
 # KRX 시세 / 밸류에이션 지표 클라이언트 (pykrx 라이브러리 사용)
-# - PER, PBR, 배당수익률
-# - 최근 종가, 거래량, 시가총액
 # ============================================================
 from datetime import datetime, timedelta
 from pykrx import stock
 
 
 def get_latest_trading_day() -> str:
-    """가장 최근 거래일(YYYYMMDD)을 찾는다. 주말/공휴일은 데이터가 비어서 최대 7일 전까지 탐색."""
+    """가장 최근 거래일(YYYYMMDD)을 찾는다."""
     today = datetime.now()
     for i in range(7):
         day = (today - timedelta(days=i)).strftime("%Y%m%d")
-        df = stock.get_market_ohlcv(day, day, "005930")  # 삼성전자로 거래일 여부 확인
+        df = stock.get_market_ohlcv(day, day, "005930")
         if not df.empty:
             return day
     raise RuntimeError("최근 거래일을 찾을 수 없습니다.")
 
 
 def get_valuation(ticker: str, date: str) -> dict:
-    """PER, PBR, 배당수익률 등을 조회한다."""
+    """PER, PBR, 배당수익률 등을 조회한다 (KRX 제공, 전년도 사업보고서 기준)."""
     df = stock.get_market_fundamental(date, date, ticker)
     if df.empty:
         return {}
@@ -50,3 +48,17 @@ def get_price_snapshot(ticker: str, date: str) -> dict:
         result["시가총액"] = int(cap.iloc[0].get("시가총액", 0))
 
     return result
+
+
+def get_price_history(ticker: str, days: int = 365) -> list:
+    """
+    최근 N일간의 종가 리스트를 시간순(오래된 것 -> 최신)으로 반환한다.
+    (주말/공휴일은 자동으로 빠지고 실제 거래일만 반환됨)
+    """
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+
+    df = stock.get_market_ohlcv(start_date, end_date, ticker)
+    if df.empty:
+        return []
+    return [int(v) for v in df["종가"].tolist()]
