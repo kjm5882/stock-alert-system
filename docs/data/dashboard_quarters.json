@@ -1,0 +1,445 @@
+{
+  "processed": {},
+  "quarters": {
+    "036930": {
+      "2025Q1": {
+        "net_income_won": 27716219528,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 5039630588,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 7633537884,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": -4695971298,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": -1190968811,
+        "source": "periodic"
+      }
+    },
+    "240810": {
+      "2025Q1": {
+        "net_income_won": -4714956861,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 27654473992,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 28281025994,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 32808013039,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 22053737339,
+        "source": "periodic"
+      }
+    },
+    "319660": {
+      "2025Q1": {
+        "net_income_won": 19958459711,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 13975089055,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 20612385858,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 23999728755,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 41040706704,
+        "source": "periodic"
+      }
+    },
+    "403870": {
+      "2025Q1": {
+        "net_income_won": 15201346429,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 20703226972,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 13486774956,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 23270877189,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 24861849512,
+        "source": "periodic"
+      }
+    },
+    "014680": {
+      "2025Q1": {
+        "net_income_won": 36396260246,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 49067106071,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 45304154815,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 16511148815,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 41286932138,
+        "source": "periodic"
+      }
+    },
+    "084370": {
+      "2025Q1": {
+        "net_income_won": 7534235741,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 10681326336,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 7876829859,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 16368064424,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 21754563621,
+        "source": "periodic"
+      }
+    },
+    "095610": {
+      "2025Q1": {
+        "net_income_won": 15861232195,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 18897490057,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 12100667954,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 10058406370,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 24575509317,
+        "source": "periodic"
+      }
+    },
+    "089970": {
+      "2025Q1": {
+        "net_income_won": 1565220803,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 2100638343,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 11304886368,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 11160889845,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 25581706905,
+        "source": "periodic"
+      }
+    },
+    "357780": {
+      "2025Q1": {
+        "net_income_won": 31006881641,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 11361807206,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 25997385415,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 10691840765,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 36112888514,
+        "source": "periodic"
+      }
+    },
+    "064760": {
+      "2025Q1": {
+        "net_income_won": 19518959008,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 15986620242,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 17138393079,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 17258752223,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 25112646731,
+        "source": "periodic"
+      }
+    },
+    "007660": {
+      "2025Q1": {
+        "net_income_won": 38303838563,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 31365583591,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 47215160714,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 43597369969,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 50443262315,
+        "source": "periodic"
+      }
+    },
+    "042700": {
+      "2025Q1": {
+        "net_income_won": 54748867394,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 64687278708,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 65713248282,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 28858154027,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 19031751252,
+        "source": "periodic"
+      }
+    },
+    "353200": {
+      "2025Q1": {
+        "net_income_won": -5700600296,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 4408899615,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 23278950587,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 25618077784,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 45502474083,
+        "source": "periodic"
+      }
+    },
+    "058470": {
+      "2025Q1": {
+        "net_income_won": 29344420543,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 41110227661,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 41914466281,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 39591555921,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 40395613639,
+        "source": "periodic"
+      }
+    },
+    "039030": {
+      "2025Q1": {
+        "net_income_won": 14407421606,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 2496456500,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 23171489889,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 17138045727,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 31212893556,
+        "source": "periodic"
+      }
+    },
+    "067310": {
+      "2025Q1": {
+        "net_income_won": -3474345756,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 3212606230,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 15705583412,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 22667426068,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 61047874496,
+        "source": "periodic"
+      }
+    },
+    "089030": {
+      "2025Q1": {
+        "net_income_won": -1326164399,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 21499899790,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": -6180420028,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": -4591251302,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": -6153068339,
+        "source": "periodic"
+      }
+    },
+    "131290": {
+      "2025Q1": {
+        "net_income_won": 3102798681,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 4248922077,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 11406025466,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 19471927339,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 36921324484,
+        "source": "periodic"
+      }
+    },
+    "031980": {
+      "2025Q1": {
+        "net_income_won": 15628762455,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": 17381849263,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 38918135786,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 19756189679,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 20058481603,
+        "source": "periodic"
+      }
+    },
+    "195870": {
+      "2025Q1": {
+        "net_income_won": 580608995,
+        "source": "periodic"
+      },
+      "2025Q2": {
+        "net_income_won": -438248139,
+        "source": "periodic"
+      },
+      "2025Q3": {
+        "net_income_won": 14073174023,
+        "source": "periodic"
+      },
+      "2025Q4": {
+        "net_income_won": 9605269292,
+        "source": "periodic"
+      },
+      "2026Q1": {
+        "net_income_won": 10826099897,
+        "source": "periodic"
+      }
+    }
+  }
+}
