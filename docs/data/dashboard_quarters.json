@@ -1,5 +1,18 @@
 {
-  "processed": {},
+  "processed": {
+    "dashboard_014680": [
+      "20260813001414"
+    ],
+    "dashboard_095610": [
+      "20260813000486"
+    ],
+    "dashboard_089970": [
+      "20260813001486"
+    ],
+    "dashboard_353200": [
+      "20260813001620"
+    ]
+  },
   "quarters": {
     "036930": {
       "2025Q1": {
@@ -109,6 +122,10 @@
       "2026Q1": {
         "net_income_won": 41286932138,
         "source": "periodic"
+      },
+      "2026Q2": {
+        "net_income_won": 51375724162,
+        "source": "periodic"
       }
     },
     "084370": {
@@ -153,6 +170,10 @@
       "2026Q1": {
         "net_income_won": 24575509317,
         "source": "periodic"
+      },
+      "2026Q2": {
+        "net_income_won": 34029991593,
+        "source": "periodic"
       }
     },
     "089970": {
@@ -174,6 +195,10 @@
       },
       "2026Q1": {
         "net_income_won": 25581706905,
+        "source": "periodic"
+      },
+      "2026Q2": {
+        "net_income_won": 17905820034,
         "source": "periodic"
       }
     },
@@ -284,6 +309,10 @@
       },
       "2026Q1": {
         "net_income_won": 45502474083,
+        "source": "periodic"
+      },
+      "2026Q2": {
+        "net_income_won": 57674515507,
         "source": "periodic"
       }
     },
