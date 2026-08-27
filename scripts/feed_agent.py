@@ -27,10 +27,15 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 
 # ── 설정 ──────────────────────────────────────────────
-PILOT_BLOGS = ["richyun0108", "doctordk", "pokara61"]
-PILOT_YOUTUBE_HANDLES = ["godofit_official"]
+PILOT_BLOGS = [
+    "richyun0108", "doctordk", "pokara61", "shryankim", "ranto28",
+    "kafca21", "plainvanilla_invest", "kmsmir04", "cybermw", "somewhaterror",
+    "onejejuwave", "azplazma", "gangnam_0208", "audistar", "gunbaram",
+    "bookgiver", "kimcharger", "leech6976",
+]
+PILOT_YOUTUBE_HANDLES = ["godofit_official", "info_kangyongwoon"]
 
-MAX_POSTS_PER_BLOG = 3      # 블로그당 최근 글 몇 개까지 확인할지 (파일럿이라 적게)
+MAX_POSTS_PER_BLOG = 3      # 블로그당 최근 글 몇 개까지 확인할지
 MAX_VIDEOS_PER_CHANNEL = 2  # 유튜브 채널당 최근 영상 몇 개까지 확인할지
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
