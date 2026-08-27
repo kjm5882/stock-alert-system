@@ -1,17 +1,4 @@
 {
-  "blog_posts": [
-    "https://blog.naver.com/richyun0108/224390964697?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/richyun0108/224387822470?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/richyun0108/224383448131?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/doctordk/224391611230?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/doctordk/224390968833?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/doctordk/224390483475?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/pokara61/224392046103?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/pokara61/224391838408?fromRss=true&trackingCode=rss",
-    "https://blog.naver.com/pokara61/224391595684?fromRss=true&trackingCode=rss"
-  ],
-  "youtube_videos": [
-    "Abp7sPKlpKU",
-    "vq1v5_70pSs"
-  ]
+  "blog_posts": [],
+  "youtube_videos": []
 }
