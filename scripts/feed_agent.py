@@ -108,12 +108,25 @@ def get_blog_full_text(link):
 # ── 유튜브 수집 ───────────────────────────────────────
 def get_channel_id_from_handle(handle):
     """유튜브 핸들(@xxx)에서 채널ID(UC...)를 찾아낸다."""
-    url = f"https://www.youtube.com/@{handle}"
+    url = f"https://www.youtube.com/@{handle}/about?hl=en&gl=US"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=15)
-        match = re.search(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"', res.text)
-        if match:
-            return match.group(1)
+        res = requests.get(
+            url,
+            headers=HEADERS,
+            cookies={"CONSENT": "YES+1"},  # 유럽/일부 IP의 동의 페이지 리다이렉트 우회
+            timeout=15,
+        )
+        # 여러 패턴을 순서대로 시도 (유튜브 페이지 구조가 상황에 따라 다를 수 있음)
+        patterns = [
+            r'"channelId":"(UC[a-zA-Z0-9_-]{22})"',
+            r'"externalId":"(UC[a-zA-Z0-9_-]{22})"',
+            r'channel/(UC[a-zA-Z0-9_-]{22})',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, res.text)
+            if match:
+                return match.group(1)
+        print(f"  [디버그] 응답 길이: {len(res.text)}자, 상태코드: {res.status_code}")
         return None
     except Exception as e:
         print(f"[유튜브 채널ID 오류] {handle}: {e}")
