@@ -217,7 +217,7 @@ def extract_stocks_with_claude(text, source_name):
         return json.loads(content)
     except Exception as e:
         print(f"[Claude 추출 오류] {source_name}: {e}")
-        return []
+        return None  # None = 실패(재시도 필요). 빈 리스트[]와 구분해서 사용.
 
 
 # ── 텔레그램 알림 ────────────────────────────────────
@@ -256,6 +256,10 @@ def main():
                 continue
 
             stocks = extract_stocks_with_claude(full_text, f"블로그 {blog_id}")
+            if stocks is None:
+                print(f"  → 추출 실패, 다음 실행에 재시도합니다 (이번엔 '확인 완료' 처리 안 함)")
+                continue  # seen에 추가하지 않음 → 다음 실행에서 다시 시도
+
             timestamp = datetime.now(timezone.utc).isoformat()
 
             for s in stocks:
@@ -293,6 +297,10 @@ def main():
                 continue
 
             stocks = extract_stocks_with_claude(transcript, f"유튜브 @{handle}")
+            if stocks is None:
+                print(f"  → 추출 실패, 다음 실행에 재시도합니다")
+                continue
+
             timestamp = datetime.now(timezone.utc).isoformat()
 
             for s in stocks:
