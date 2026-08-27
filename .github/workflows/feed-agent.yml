@@ -1,0 +1,38 @@
+name: Feed Agent (파일럿)
+
+# 파일럿 단계: 자동 스케줄 없이 수동 실행만.
+# 나중에 검증 끝나면 아래 schedule 주석을 풀어서 자동화하면 됩니다.
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "0 0,6,9 * * *"   # 예: 하루 3회 (UTC 기준, 한국시간 -9h)
+
+jobs:
+  run-feed-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 피드 담당자 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/feed_agent.py
+
+      - name: 결과 커밋
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/
+          git diff --quiet && git diff --staged --quiet || git commit -m "피드 담당자 파일럿 실행 결과 업데이트"
+          git push
