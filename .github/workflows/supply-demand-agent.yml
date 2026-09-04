@@ -1,0 +1,36 @@
+name: Supply-Demand Agent (수급 담당자)
+
+# 파일럿 단계: 수동 실행. 검증되면 스케줄 추가 (예: 장마감 후 매일).
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "30 7 * * 1-5"   # 예: 평일 한국시간 16:30 (UTC 07:30) 장마감 후
+
+jobs:
+  run-supply-demand-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 수급 담당자 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/supply_demand_agent.py
+
+      - name: 결과 커밋
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/
+          git diff --quiet && git diff --staged --quiet || git commit -m "수급 담당자 실행 결과 업데이트"
+          git push
