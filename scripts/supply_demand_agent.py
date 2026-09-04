@@ -26,7 +26,7 @@ import requests
 from pykrx import stock
 
 # ── 설정 ──────────────────────────────────────────────
-LOOKBACK_DAYS_FOR_MENTIONS = 7      # 피드에서 며칠치 언급을 볼지
+LOOKBACK_DAYS_FOR_MENTIONS = 14     # 피드에서 며칠치 언급을 볼지
 TRADING_DAYS_FOR_SUPPLY = 15        # 수급 데이터 몇 거래일치 볼지
 CONSECUTIVE_DAYS_THRESHOLD = 3      # 연속 순매수 며칠부터 신호로 볼지
 SPIKE_MULTIPLIER_THRESHOLD = 3.0    # 평소 대비 몇 배부터 급증으로 볼지
