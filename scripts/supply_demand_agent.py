@@ -98,26 +98,56 @@ def build_or_load_ticker_map():
 
     print("[티커맵] 새로 생성 중... (KOSPI+KOSDAQ 전체 종목)")
     name_to_ticker = {}
-    today = datetime.now().strftime("%Y%m%d")
 
-    for market in ["KOSPI", "KOSDAQ"]:
-        tickers = stock.get_market_ticker_list(today, market=market)
-        for ticker in tickers:
-            try:
-                name = stock.get_market_ticker_name(ticker)
-                name_to_ticker[name] = ticker
-            except Exception:
-                continue
+    # 오늘 날짜 데이터가 아직 준비 안 됐을 수 있으니, 최대 7일 전까지 하루씩 뒤로 가며 시도
+    for days_back in range(1, 8):
+        candidate_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+        try:
+            temp_map = {}
+            for market in ["KOSPI", "KOSDAQ"]:
+                tickers = stock.get_market_ticker_list(candidate_date, market=market)
+                if not tickers:
+                    raise ValueError("빈 종목 목록")
+                for ticker in tickers:
+                    try:
+                        name = stock.get_market_ticker_name(ticker)
+                        temp_map[name] = ticker
+                    except Exception:
+                        continue
+            if temp_map:
+                name_to_ticker = temp_map
+                print(f"[티커맵] {candidate_date} 기준 데이터로 생성 성공")
+                break
+        except Exception as e:
+            print(f"  [티커맵 시도 실패] {candidate_date}: {e}")
+            continue
+
+    if not name_to_ticker:
+        print("[티커맵] 생성 실패 - 여러 날짜 모두 실패. 이번 실행은 매칭 없이 종료됩니다.")
+        return {}
 
     save_json(TICKER_MAP_FILE, name_to_ticker)
     print(f"[티커맵] {len(name_to_ticker)}개 종목 매핑 완료")
     return name_to_ticker
 
 
+# 블로그/유튜브에서 흔히 쓰이는 약칭 → 정식 종목명 보정 사전
+ALIAS_MAP = {
+    "콜마": "한국콜마",
+    "코스메카": "코스메카코리아",
+    "SKT": "SK텔레콤",
+    "LG화학": "LG화학",  # 정식명과 동일 (확인용)
+}
+
+
 def match_stock_name_to_ticker(stock_name, ticker_map):
-    """종목명을 티커로 매칭. 정확히 일치 안 하면 살짝 정규화해서 재시도."""
+    """종목명을 티커로 매칭. 정확히 일치 안 하면 약칭 보정 후 재시도."""
     if stock_name in ticker_map:
         return ticker_map[stock_name]
+
+    # 약칭 사전 확인
+    if stock_name in ALIAS_MAP and ALIAS_MAP[stock_name] in ticker_map:
+        return ticker_map[ALIAS_MAP[stock_name]]
 
     # 흔한 접미사/공백 정리 후 재시도
     normalized = stock_name.replace("(주)", "").replace("주식회사", "").strip()
