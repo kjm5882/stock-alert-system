@@ -1,0 +1,16 @@
+name: 네이버 수급 진단 (임시)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diagnose-naver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pandas lxml html5lib beautifulsoup4
+      - name: 네이버 구조 확인
+        run: python scripts/diagnose_naver.py
