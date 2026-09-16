@@ -1,0 +1,16 @@
+name: 네이버 응답 확인 v3 (임시)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diagnose-naver3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: 네이버 응답 본문 확인
+        run: python scripts/diagnose_naver3.py
