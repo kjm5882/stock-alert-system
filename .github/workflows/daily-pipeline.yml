@@ -1,0 +1,93 @@
+name: 일일 파이프라인 (피드 → 수급 → 매칭)
+
+# 세 담당자를 순서대로 실행한다.
+# 순서가 중요한 이유:
+#   피드 담당자가 오늘 언급된 종목을 뽑아야 → 수급 담당자가 그 종목을 조회하고
+#   → 매칭 엔진이 둘을 교차할 수 있다.
+# 하나의 job 안에서 순차 실행하므로 파일이 그대로 이어진다.
+on:
+  schedule:
+    - cron: "0 10 * * 1-5"   # 평일 한국시간 19:00 (UTC 10:00) — 장 마감 후
+  workflow_dispatch: {}      # 수동 실행도 가능
+
+# 동시에 두 번 돌면 data/ 커밋이 충돌하므로 한 번에 하나만 실행
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      # 신규 상장·상장폐지 반영을 위해 매월 1일에만 기업코드를 새로 받는다.
+      # 다운로드가 실패해도 기존 파일을 잃지 않도록 백업 후 복구한다.
+      - name: 기업코드 월 1회 갱신
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          if [ "$(date -u +%d)" = "01" ]; then
+            echo "매월 1일 - 기업코드 갱신 시도"
+            cp data/corp_codes.xml /tmp/corp_codes.bak 2>/dev/null || true
+            rm -f data/corp_codes.xml
+          fi
+
+      - name: 종목명↔티커 매핑 갱신
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+        run: python scripts/build_ticker_map.py
+
+      - name: 기업코드 복구 (갱신 실패 시)
+        if: ${{ always() }}
+        run: |
+          if [ ! -s data/corp_codes.xml ] && [ -s /tmp/corp_codes.bak ]; then
+            echo "기업코드 갱신 실패 - 백업본 복구"
+            cp /tmp/corp_codes.bak data/corp_codes.xml
+          fi
+
+      # ── 1단계: 내러티브 수집 ──
+      - name: 피드 담당자
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/feed_agent.py
+
+      # ── 2단계: 언급 종목의 수급 확인 ──
+      - name: 수급 담당자
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/supply_demand_agent.py
+
+      # ── 3단계: 교집합 판정 ──
+      # 앞 단계가 실패해도 기존 데이터로 판정은 돌린다.
+      - name: 매칭 엔진
+        if: ${{ always() }}
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/matching_engine.py
+
+      - name: 결과 커밋
+        if: ${{ always() }}
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/
+          git diff --quiet && git diff --staged --quiet \
+            || git commit -m "일일 파이프라인 실행 결과 ($(date -u -d '+9 hours' +%Y-%m-%d))"
+          git push
