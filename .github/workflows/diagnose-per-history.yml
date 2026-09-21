@@ -1,0 +1,16 @@
+name: 과거 PER 데이터 탐색 (임시)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diagnose-per:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: 연도별 PER 데이터 탐색
+        run: python scripts/diagnose_per_history.py
