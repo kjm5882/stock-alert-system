@@ -39,6 +39,9 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+# GitHub Actions는 UTC로 돌아가므로, 사람이 읽는 시각은 한국시간으로 바꿔서 표시한다.
+KST = timezone(timedelta(hours=9))
+
 # ── 설정 ──────────────────────────────────────────────
 LOOKBACK_DAYS_FOR_MENTIONS = 14   # 피드에서 며칠치 언급을 볼지
 MIN_HISTORY_YEARS = 3             # 이력이 이보다 적으면 판단 제외
@@ -853,7 +856,7 @@ def main():
     hidden = [r for r in analyzed if "숨은 저평가" in r["라벨"]]
 
     lines = [f"🎯 <b>매칭 엔진 리포트</b> "
-             f"({datetime.now().strftime('%Y-%m-%d %H:%M')})",
+             f"({datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST)",
              f"분석 {len(analyzed)}종목 · 골든존 {len(golden)}개\n"]
 
     if golden:
