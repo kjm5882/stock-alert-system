@@ -52,7 +52,10 @@ DEBUG_FIRST_N = 2                 # 처음 N개 종목은 원본 응답까지 �
 #   100 초과: 이익이 시총 대비 1% 미만 → '비싸다'가 아니라 '이익이 없다'는 뜻
 PER_VALID_MIN = 0.1
 PER_VALID_MAX = 100.0
-MIN_VALID_PER_SAMPLES = 2   # 유효 과거 PER이 이보다 적으면 밸류 판정 보류
+# 유효 과거 PER이 이보다 적으면 '자기 과거 대비'를 쓰지 않는다.
+# 2로 두면 백분위가 0/50/100 세 값밖에 못 나와 사실상 동전 던지기가 된다.
+# (실제로 SK하이닉스·한국콜마·테스 등 10여 종목이 2년 표본으로 0 또는 100을 받았다)
+MIN_VALID_PER_SAMPLES = 3
 
 # ── 펀더멘탈 점수 배점 (합계 100) ──
 # 지표마다 성격이 달라 절대 기준과 상대 기준을 섞는다.
@@ -243,6 +246,10 @@ def score_per(current_per, industry_per, past_pers):
 
     if not scores:
         return None, "비교 기준 없음"
+    # 두 기준이 정반대를 가리키면 평균은 '보통(50점)'이 되는데,
+    # 이건 진짜 보통인 것과 뜻이 전혀 다르므로 구분해서 표시한다.
+    if len(scores) == 2 and abs(scores[0] - scores[1]) >= 60:
+        notes.append("⚠︎ 두 기준 엇갈림")
     return round(sum(scores) / len(scores), 1), " + ".join(notes)
 
 
@@ -272,7 +279,10 @@ def combine_funda_score(parts):
     (파두는 배점 40점어치만으로 100점, 로보티즈는 60점어치로 95점이 나왔다)
     그래서 '판단 재료가 부족하면 확신도 낮춰야 한다'는 원칙을 점수에 반영한다.
       보정점수 = 50 + (원점수 - 50) × 확보배점비율
-    배점을 다 채운 종목은 그대로 두고, 절반만 채운 종목은 극단 점수가 절반만 남는다.
+    단, 이 보정은 '위로만' 적용한다. 즉 점수를 깎기만 하고 올리지는 않는다.
+    양방향으로 적용하면 재료가 부족한 부실 기업이 오히려 점수를 얻는다.
+    (메지온은 원점수 3.8점이 31.5점으로 올라갔다 — 모르면 좋게 봐준 셈)
+    모르면 좋게 보지 않는다는 원칙만 남기고, 나쁘다는 판정은 그대로 둔다.
 
     반환: (보정점수, 확보배점, 원점수)
     """
@@ -282,7 +292,7 @@ def combine_funda_score(parts):
     total_w = sum(FUNDA_WEIGHTS[k] for k in got)
     raw = sum(got[k] * FUNDA_WEIGHTS[k] for k in got) / total_w
     coverage = total_w / sum(FUNDA_WEIGHTS.values())
-    adjusted = 50 + (raw - 50) * coverage
+    adjusted = min(raw, 50 + (raw - 50) * coverage)
     return round(adjusted, 1), total_w, round(raw, 1)
 
 
