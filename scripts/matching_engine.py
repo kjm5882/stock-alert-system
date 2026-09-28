@@ -54,10 +54,27 @@ PER_VALID_MIN = 0.1
 PER_VALID_MAX = 100.0
 MIN_VALID_PER_SAMPLES = 2   # 유효 과거 PER이 이보다 적으면 밸류 판정 보류
 
+# ── 펀더멘탈 점수 배점 (합계 100) ──
+# 지표마다 성격이 달라 절대 기준과 상대 기준을 섞는다.
+#   절대가 맞는 것 : 부채비율·매출성장률·시가배당률
+#       업종과 무관하게 통용되는 좋고 나쁨의 기준이 있다.
+#   상대가 맞는 것 : 영업이익률
+#       조선 5%와 바이오 45%를 같은 자로 잴 수 없다. 자기 과거와 비교해야 한다.
+#   PER : 업종 평균과 비교(가능하면). 자기 과거는 표본이 3년뿐이라 해상도가 낮고,
+#         절대 기준은 업종 편향을 만든다.
+FUNDA_WEIGHTS = {
+    "PER": 25,
+    "영업이익률": 25,
+    "부채비율": 20,
+    "매출성장률": 15,
+    "시가배당률": 15,
+}
+FUNDA_GOOD_THRESHOLD = 60      # 펀더멘탈 점수가 이 이상이면 '양호'로 본다
+
 # 골든존 기준
 NARRATIVE_MIN_SOURCES = 2         # 서로 다른 블로거/채널 최소 몇 곳에서 언급돼야 하는지
 NARRATIVE_MIN_SCORE = 50          # 내러티브 점수 하한
-VALUATION_MAX_PERCENTILE = 40     # PER이 과거 분포의 이 백분위 이하면 '저평가'
+VALUATION_MAX_PERCENTILE = 40     # (구버전 호환) PER 자기과거 백분위 기준
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 FEED_SIGNALS_FILE = os.path.join(DATA_DIR, "feed_signals.jsonl")
@@ -130,6 +147,110 @@ def to_number(text):
 def is_valid_per(value):
     """PER이 밸류에이션 지표로서 의미 있는 범위인지."""
     return value is not None and PER_VALID_MIN <= value <= PER_VALID_MAX
+
+
+# 부채비율이 이 값을 넘으면 절대 기준을 적용하지 않는다.
+# 금융업(증권·은행·보험)은 구조적으로 수백~수천%가 정상이라 같은 자로 잴 수 없다.
+# 업종 코드로 자동 판별할 수 없으므로, 점수에서 제외하고 사람이 확인하도록 남긴다.
+DEBT_RATIO_UNSCORABLE = 400.0
+
+
+def score_debt_ratio(v):
+    """부채비율 — 낮을수록 좋다. 0~100점으로 환산.
+
+    400%를 넘으면 점수를 매기지 않고 None을 돌려준다.
+    금융업일 가능성이 높은데, 부실기업도 높게 나올 수 있어 자동으로 구분할 수 없다.
+    잘못된 점수를 주는 것보다 해당 축을 빼고 나머지로 환산하는 편이 안전하다.
+    """
+    if v is None:
+        return None
+    if v > DEBT_RATIO_UNSCORABLE:
+        return None
+    if v <= 50:
+        return 100
+    if v <= 100:
+        return 80
+    if v <= 150:
+        return 60
+    if v <= 200:
+        return 35
+    return 10
+
+
+def score_revenue_growth(v):
+    """매출성장률 — 높을수록 좋다. 업종과 무관하게 통용된다."""
+    if v is None:
+        return None
+    if v >= 30:
+        return 100
+    if v >= 15:
+        return 80
+    if v >= 5:
+        return 60
+    if v >= 0:
+        return 35
+    return 10
+
+
+def score_dividend_yield(v):
+    """시가배당률 — 높을수록 좋다. 무배당은 0점.
+
+    성장주에 불리한 지표라는 점은 감안하고 배점을 15점으로 제한했다.
+    """
+    if v is None:
+        return None
+    if v >= 5:
+        return 100
+    if v >= 3:
+        return 80
+    if v >= 1.5:
+        return 55
+    if v > 0:
+        return 30
+    return 0
+
+
+def score_per(current_per, industry_per, past_pers):
+    """PER 점수. 업종 평균이 있으면 그것과 비교하고, 없으면 자기 과거로 대체한다.
+
+    반환: (0~100점, 근거 문구)
+    """
+    if not is_valid_per(current_per):
+        return None, "PER 무효(적자·이익 미미)"
+
+    if industry_per and industry_per > 0:
+        discount = (industry_per - current_per) / industry_per * 100
+        if discount >= 30:
+            s = 100
+        elif discount >= 10:
+            s = 80
+        elif discount >= -10:
+            s = 55
+        elif discount >= -30:
+            s = 30
+        else:
+            s = 10
+        return s, f"업종평균 {industry_per:.1f} 대비 {discount:+.0f}%"
+
+    if len(past_pers) >= MIN_VALID_PER_SAMPLES:
+        pct = percentile_rank(current_per, past_pers)
+        return round(100 - pct, 1), f"자기 과거 {len(past_pers)}년 중 백분위 {pct}"
+
+    return None, "비교 기준 없음"
+
+
+def combine_funda_score(parts):
+    """확보된 지표만으로 100점 만점 환산.
+
+    일부 지표가 없는 종목도 나머지로 공정하게 비교할 수 있도록,
+    확보된 지표의 배점 합을 분모로 삼는다.
+    """
+    got = {k: v for k, v in parts.items() if v is not None}
+    if not got:
+        return None, 0
+    total_w = sum(FUNDA_WEIGHTS[k] for k in got)
+    score = sum(got[k] * FUNDA_WEIGHTS[k] for k in got) / total_w
+    return round(score, 1), total_w
 
 
 def percentile_rank(value, history):
@@ -296,7 +417,7 @@ def match_name_to_ticker(name, ticker_map):
 
 
 # ── 4) DART 연간 재무 이력 ────────────────────────────
-DART_ACCOUNTS = {"매출액", "영업이익", "당기순이익", "자본총계"}
+DART_ACCOUNTS = {"매출액", "영업이익", "당기순이익", "자본총계", "부채총계"}
 
 
 def fetch_dart_annual_block(corp_code, bsns_year):
@@ -396,6 +517,8 @@ NAVER_ROW_PATTERNS = {
     "PER": ["PER"],
     "영업이익률": ["영업이익률"],
     "ROE": ["ROE"],
+    "부채비율": ["부채비율"],
+    "주당배당금": ["주당배당금"],
     "매출액": ["매출액"],
 }
 
@@ -460,7 +583,8 @@ def fetch_naver_current(ticker, debug=False):
     """네이버 integration → 현재가, 시가총액, 네이버 자체 PER(TTM) 등."""
     url = f"https://m.stock.naver.com/api/stock/{ticker}/integration"
     info = {"현재가": None, "시가총액": None, "네이버PER": None,
-            "추정PER": None, "종목명확인": None}
+            "추정PER": None, "종목명확인": None,
+            "업종명": None, "업종평균PER": None}
     try:
         res = requests.get(url, headers=NAVER_HEADERS, timeout=20)
         if debug:
@@ -487,6 +611,41 @@ def fetch_naver_current(ticker, debug=False):
                 print(f"    [진단] 시총 원문='{value}' → {info['시가총액']}")
         elif code == "lastClosePrice":
             info["현재가"] = to_number(value)
+
+    # 업종 평균 PER — 있으면 PER 점수의 기준으로 쓴다.
+    # 응답 구조를 문서로 확인하지 못했으므로 여러 형태를 방어적으로 살핀다.
+    cmp_info = data.get("industryCompareInfo")
+    if cmp_info:
+        if debug:
+            print(f"    [진단] industryCompareInfo 구조: "
+                  f"{json.dumps(cmp_info, ensure_ascii=False)[:500]}")
+        info["업종명"] = (cmp_info.get("industryName")
+                       or cmp_info.get("industryCodeName")
+                       or cmp_info.get("name"))
+        # 업종 평균 PER이 담길 만한 키 후보를 순서대로 찾는다
+        for key in ("industryPer", "industryPersonPer", "upjongPer",
+                    "averagePer", "industryAvgPer", "per"):
+            v = to_number(re.sub(r"[^\d.\-]", "", str(cmp_info.get(key))))
+            if v and v > 0:
+                info["업종평균PER"] = v
+                break
+        # 중첩 구조일 수 있어 한 단계 더 들어가 본다
+        if info["업종평균PER"] is None:
+            for sub in cmp_info.values():
+                if isinstance(sub, dict):
+                    for key in ("industryPer", "per", "averagePer"):
+                        v = to_number(re.sub(r"[^\d.\-]", "", str(sub.get(key))))
+                        if v and v > 0:
+                            info["업종평균PER"] = v
+                            break
+                if info["업종평균PER"]:
+                    break
+
+    if info.get("업종명") is None:
+        info["업종명"] = data.get("industryCodeType") or data.get("industryCode")
+
+    if debug:
+        print(f"    [진단] 업종={info['업종명']} 업종평균PER={info['업종평균PER']}")
     return info
 
 
@@ -503,34 +662,40 @@ def fetch_naver_basic_price(ticker):
 
 
 # ── 6) 펀더멘탈 지표 계산 ─────────────────────────────
-def compute_fundamentals(dart_history, naver_annual, current_per):
-    """연도별 지표와 현재 지표를 계산하고, 현재값의 과거 대비 백분위를 낸다.
+def compute_fundamentals(dart_history, naver_annual, current_per,
+                         current_price=None, industry_per=None):
+    """연도별 지표를 만들고 5개 축으로 펀더멘탈 점수를 산출한다.
 
-    지표별 출처가 다르다:
-      - PER                      : 네이버 연도별 값 (3~5년). 현재값은 네이버 PER(TTM).
-      - 영업이익률/ROE/매출성장률  : DART 연간 재무로 직접 계산 (최대 12년).
-                                   DART가 비면 네이버 값으로 대체.
+    지표별 출처와 방식:
+      PER        네이버 연도별 + 현재 PER(TTM) → 업종평균 대비(우선) / 자기과거(대체)
+      영업이익률   DART 최대 12년 → 자기 과거 백분위
+      부채비율    DART 최대 12년 (부채총계÷자본총계) → 절대 기준
+      매출성장률   DART 최대 12년 → 절대 기준
+      시가배당률   네이버 주당배당금 ÷ 현재주가 → 절대 기준
     """
-    series = {"영업이익률": {}, "ROE": {}, "매출성장률": {}, "PER": {}}
+    series = {"영업이익률": {}, "ROE": {}, "매출성장률": {}, "PER": {}, "부채비율": {}}
 
-    # ── DART 기반 장기 수익성 지표 ──
+    # ── DART 기반 장기 지표 ──
     for year in sorted(dart_history.keys()):
         acc = dart_history[year]
         revenue = acc.get("매출액")
         op_profit = acc.get("영업이익")
         net_income = acc.get("당기순이익")
         equity = acc.get("자본총계")
+        debt = acc.get("부채총계")
 
         if revenue and revenue > 0 and op_profit is not None:
             series["영업이익률"][year] = round(op_profit / revenue * 100, 2)
         if equity and equity > 0 and net_income is not None:
             series["ROE"][year] = round(net_income / equity * 100, 2)
+        if equity and equity > 0 and debt is not None:
+            series["부채비율"][year] = round(debt / equity * 100, 2)
         prev = dart_history.get(year - 1, {}).get("매출액")
         if prev and prev > 0 and revenue is not None:
             series["매출성장률"][year] = round((revenue - prev) / prev * 100, 2)
 
-    # DART가 비었으면 네이버 값으로 대체 (연수는 짧지만 없는 것보단 낫다)
-    for metric in ["영업이익률", "ROE"]:
+    # DART가 비면 네이버 값으로 대체 (연수는 짧지만 없는 것보단 낫다)
+    for metric in ["영업이익률", "ROE", "부채비율"]:
         if not series[metric] and naver_annual.get(metric):
             series[metric] = dict(naver_annual[metric])
     if not series["매출성장률"] and naver_annual.get("매출액"):
@@ -540,16 +705,15 @@ def compute_fundamentals(dart_history, naver_annual, current_per):
                 series["매출성장률"][year] = round(
                     (rev[year] - rev[year - 1]) / rev[year - 1] * 100, 2)
 
-    # ── PER: 네이버 연도별 값에서 유효 범위만 사용 ──
+    # PER은 유효 범위 안의 값만 쓴다
     raw_per = naver_annual.get("PER") or {}
     series["PER"] = {y: v for y, v in raw_per.items() if is_valid_per(v)}
     dropped_per = {y: v for y, v in raw_per.items() if not is_valid_per(v)}
 
+    # ── 각 지표의 '현재값' 확정 ──
     current = {}
     percentiles = {}
-
-    # 수익성 지표: 가장 최근 확정 연도 값을 '현재'로 보고, 그 이전 연도들과 비교
-    for metric in ["영업이익률", "ROE", "매출성장률"]:
+    for metric in ["영업이익률", "ROE", "매출성장률", "부채비율"]:
         values = series[metric]
         if values:
             latest = max(values)
@@ -560,95 +724,123 @@ def compute_fundamentals(dart_history, naver_annual, current_per):
             current[metric] = None
             percentiles[metric] = None
 
-    # PER: 지금 주가 기준 값(TTM)을 과거 연말 PER 분포와 비교
-    # 현재값이든 과거값이든 유효 범위를 벗어나면 밸류 판정을 하지 않는다.
     current["PER"] = current_per if is_valid_per(current_per) else None
-    current["PER원본"] = current_per      # 화면 표시용 (제외됐어도 값은 보여준다)
-
+    current["PER원본"] = current_per
     if current["PER"] is not None and len(series["PER"]) >= MIN_VALID_PER_SAMPLES:
-        percentiles["PER"] = percentile_rank(current["PER"], list(series["PER"].values()))
+        percentiles["PER"] = percentile_rank(current["PER"],
+                                             list(series["PER"].values()))
     else:
         percentiles["PER"] = None
 
-    # 밸류 판정을 못 한 이유를 남겨둔다
-    if current["PER"] is None:
-        per_note = ("적자 또는 이익 미미" if current_per is not None
-                    else "현재 PER 없음")
-    elif len(series["PER"]) < MIN_VALID_PER_SAMPLES:
-        per_note = f"유효 과거 PER {len(series['PER'])}개뿐 (표본 부족)"
-    else:
-        per_note = None
+    # 시가배당률 = 최근 주당배당금 ÷ 현재 주가
+    dividend = None
+    dps_series = naver_annual.get("주당배당금") or {}
+    if dps_series and current_price and current_price > 0:
+        latest_dps = dps_series[max(dps_series)]
+        if latest_dps is not None:
+            dividend = round(latest_dps / current_price * 100, 2)
+    current["시가배당률"] = dividend
+
+    # ── 5개 축 점수화 ──
+    per_score, per_note = score_per(current_per, industry_per,
+                                    list(series["PER"].values()))
+    parts = {
+        "PER": per_score,
+        "영업이익률": percentiles["영업이익률"],
+        "부채비율": score_debt_ratio(current["부채비율"]),
+        "매출성장률": score_revenue_growth(current["매출성장률"]),
+        "시가배당률": score_dividend_yield(dividend),
+    }
+    funda_score, covered_weight = combine_funda_score(parts)
+
+    주의 = []
+    if (current["부채비율"] is not None
+            and current["부채비율"] > DEBT_RATIO_UNSCORABLE):
+        주의.append(f"부채비율 {current['부채비율']:.0f}% — 금융업이면 정상, "
+                  f"아니면 재무 위험. 점수에서 제외함")
+    if industry_per is None and len(series["PER"]) < MIN_VALID_PER_SAMPLES:
+        주의.append("PER 비교 기준 없음")
 
     profit_years = series["영업이익률"] or series["ROE"]
     return {
         "연도별": series,
         "현재": current,
         "백분위": percentiles,
+        "축점수": parts,
+        "주의": 주의,
+        "펀더멘탈점수": funda_score,
+        "반영배점": covered_weight,
+        "PER근거": per_note,
+        "업종평균PER": industry_per,
         "기준연도": max(profit_years) if profit_years else None,
         "이력연수": len(profit_years),
         "PER이력연수": len(series["PER"]),
+        "부채이력연수": len(series["부채비율"]),
         "PER제외연도": dropped_per,
-        "PER판정불가사유": per_note,
+        "PER판정불가사유": None if per_score is not None else per_note,
     }
 
 
 def classify(narrative_score, narrative_sources, funda, supply_signal):
-    """세 신호를 합쳐 분류 라벨과 종합 점수를 만든다."""
-    pcts = funda["백분위"]
+    """세 신호를 합쳐 분류 라벨과 종합 점수를 만든다.
+
+    이전 버전은 PER 하나로 '싼가'를 판단했다. 지금은 수익성·안정성·성장성·배당을
+    함께 보는 펀더멘탈 점수를 쓴다. 따라서 골든존의 의미도
+    '싼 종목'에서 '체력이 좋은 종목'으로 넓어졌다.
+    """
     cur = funda["현재"]
-    per_pct = pcts.get("PER")
-    profit_pcts = [pcts[m] for m in ("영업이익률", "ROE") if pcts.get(m) is not None]
-    avg_profit_pct = statistics.mean(profit_pcts) if profit_pcts else None
+    funda_score = funda.get("펀더멘탈점수")
 
-    # 밸류에이션 점수: PER이 과거 분포 하단일수록 높음
-    valuation_score = (100 - per_pct) if per_pct is not None else None
-
-    # 적자 기업은 저평가 판정 대상이 아니다.
-    # PER이 낮아 보여도 이익이 없으면 '싸다'는 말이 성립하지 않는다.
+    # 적자 기업은 펀더멘탈 판정 대상이 아니다.
+    # 지표가 낮아 보여도 이익이 없으면 '좋다/나쁘다'를 논할 수 없다.
     op_margin = cur.get("영업이익률")
     roe = cur.get("ROE")
-    is_loss = (op_margin is not None and op_margin <= 0) or (roe is not None and roe <= 0)
+    is_loss = (op_margin is not None and op_margin <= 0) or \
+              (roe is not None and roe <= 0)
 
-    is_cheap = (not is_loss
-                and per_pct is not None
-                and per_pct <= VALUATION_MAX_PERCENTILE)
+    is_strong = (not is_loss
+                 and funda_score is not None
+                 and funda_score >= FUNDA_GOOD_THRESHOLD)
     is_hot = (narrative_sources >= NARRATIVE_MIN_SOURCES
               and narrative_score >= NARRATIVE_MIN_SCORE)
     has_supply = supply_signal is not None
 
+    # 수익성이 자기 과거 대비 어디쯤인지 (골든존 세부 구분용)
+    profit_pcts = [funda["백분위"][m] for m in ("영업이익률", "ROE")
+                   if funda["백분위"].get(m) is not None]
+    avg_profit_pct = statistics.mean(profit_pcts) if profit_pcts else None
+
     if is_loss:
-        label = "🚫 적자 (밸류 판정 제외)"
-        note = "영업이익 또는 순이익이 적자 — PER 기반 저평가 판단이 성립하지 않음"
-    elif per_pct is None:
-        reason = funda.get("PER판정불가사유") or "PER 비교 불가"
-        label = "❔ 밸류 판정 보류"
-        note = reason
-    elif is_cheap and is_hot:
+        label = "🚫 적자 (펀더멘탈 판정 제외)"
+        note = "영업이익 또는 순이익이 적자 — 펀더멘탈 점수를 논할 수 없음"
+    elif funda_score is None:
+        label = "❔ 펀더멘탈 판정 보류"
+        note = "지표를 하나도 확보하지 못함"
+    elif is_strong and is_hot:
         if avg_profit_pct is not None and avg_profit_pct < 40:
             label = "🎯 골든존 (사이클 저점형)"
-            note = "밸류에이션도 실적도 과거 대비 낮은 구간 — 턴어라운드 가정이 맞아야 성립"
+            note = "펀더멘탈은 받쳐주는데 수익성은 과거 대비 낮은 구간 — 턴어라운드 가정 필요"
         else:
-            label = "🎯 골든존 (실적 유지 + 저평가)"
-            note = "실적은 과거 수준을 지키는데 밸류만 낮아진 구간"
-    elif is_cheap and not is_hot:
-        label = "💎 숨은 저평가 (아직 소외)"
-        note = "밸류는 싼데 아직 얘기가 안 되는 구간"
-    elif is_hot and not is_cheap:
-        label = "🔥 내러티브 선행 (밸류 부담)"
-        note = "얘기는 뜨거운데 밸류는 과거 대비 높은 구간"
+            label = "🎯 골든존 (체력 + 내러티브)"
+            note = "펀더멘탈이 탄탄하고 시장의 관심도 붙은 구간"
+    elif is_strong and not is_hot:
+        label = "💎 숨은 우량 (아직 소외)"
+        note = "펀더멘탈은 좋은데 아직 얘기가 안 되는 구간"
+    elif is_hot and not is_strong:
+        label = "🔥 내러티브 선행 (펀더멘탈 부담)"
+        note = "얘기는 뜨거운데 펀더멘탈이 못 따라오는 구간"
     else:
         label = "⚪ 관망"
         note = ""
 
-    # 종합 점수: 내러티브 40% + 밸류 40% + 수급 20%
-    # 적자면 밸류 점수를 주지 않는다.
+    # 종합 점수: 내러티브 40% + 펀더멘탈 40% + 수급 20점
     parts = [narrative_score * 0.4]
-    if valuation_score is not None and not is_loss:
-        parts.append(valuation_score * 0.4)
+    if funda_score is not None and not is_loss:
+        parts.append(funda_score * 0.4)
     parts.append(20 if has_supply else 0)
     total = round(sum(parts), 1)
 
-    return label, note, total, valuation_score, avg_profit_pct
+    return label, note, total, funda_score, avg_profit_pct
 
 
 # ── 8) 텔레그램 ───────────────────────────────────────
@@ -773,10 +965,11 @@ def main():
         current_price = naver_now["현재가"] or fetch_naver_basic_price(ticker)
         current_per = naver_now["네이버PER"]
 
-        funda = compute_fundamentals(dart_history, naver_annual, current_per)
+        funda = compute_fundamentals(dart_history, naver_annual, current_per,
+                                     current_price, naver_now.get("업종평균PER"))
 
-        if funda["이력연수"] < MIN_HISTORY_YEARS and funda["PER이력연수"] == 0:
-            print(f"  이력 부족 (재무 {funda['이력연수']}년, PER 0년) → 판단 제외")
+        if funda["이력연수"] < MIN_HISTORY_YEARS and funda["펀더멘탈점수"] is None:
+            print(f"  이력 부족 (재무 {funda['이력연수']}년, 지표 확보 실패) → 판단 제외")
             results.append({
                 "종목명": name, "티커": ticker,
                 "상태": "이력부족",
@@ -799,18 +992,19 @@ def main():
         print(f"  재료: 수익성 {funda['이력연수']}년(DART) · "
               f"PER {funda['PER이력연수']}년(네이버) · "
               f"현재PER {'O' if current_per else 'X'}")
-        if funda["현재"]["PER"] is None and funda["현재"].get("PER원본") is not None:
-            per_txt = f"PER {funda['현재']['PER원본']} (제외: {funda['PER판정불가사유']})"
-        else:
-            per_txt = (f"PER {fmt(funda['현재']['PER'])} "
-                       f"(백분위 {fmt(funda['백분위']['PER'])})")
-        if funda["PER제외연도"]:
-            per_txt += f" [과거 제외 {len(funda['PER제외연도'])}개]"
-        print(f"  {label} | 종합 {total}점 | " + per_txt + " | "
-              f"영업이익률 {fmt(funda['현재']['영업이익률'], '%')} "
-              f"(백분위 {fmt(funda['백분위']['영업이익률'])}) | "
-              f"ROE {fmt(funda['현재']['ROE'], '%')} "
-              f"(백분위 {fmt(funda['백분위']['ROE'])})")
+        s = funda["축점수"]
+        print(f"  {label} | 종합 {total}점 | "
+              f"펀더멘탈 {fmt(funda['펀더멘탈점수'])}점 "
+              f"(반영배점 {funda['반영배점']}/100)")
+        print(f"    PER {fmt(funda['현재']['PER'])} → {fmt(s['PER'])}점 "
+              f"[{funda['PER근거']}]")
+        print(f"    영업이익률 {fmt(funda['현재']['영업이익률'], '%')} → {fmt(s['영업이익률'])}점 "
+              f"(자기 {funda['이력연수']}년 백분위) · "
+              f"부채비율 {fmt(funda['현재']['부채비율'], '%')} → {fmt(s['부채비율'])}점")
+        print(f"    매출성장 {fmt(funda['현재']['매출성장률'], '%')} → {fmt(s['매출성장률'])}점 · "
+              f"배당 {fmt(funda['현재']['시가배당률'], '%')} → {fmt(s['시가배당률'])}점")
+        for w in funda.get("주의", []):
+            print(f"    ⚠️ {w}")
         if own and own.get("플래그"):
             print(f"  지분: {' · '.join(own['플래그'])}")
 
@@ -824,7 +1018,7 @@ def main():
             "현재가": current_price,
             "내러티브": narr,
             "펀더멘탈": funda,
-            "밸류점수": val_score,
+            "펀더멘탈점수": val_score,
             "수익성백분위평균": round(profit_pct, 1) if profit_pct is not None else None,
             "수급신호": supply_signal["신호"] if supply_signal else None,
             "참고_네이버PER": naver_now["네이버PER"],
@@ -845,7 +1039,10 @@ def main():
             "내러티브하한": NARRATIVE_MIN_SCORE,
             "PER저평가백분위": VALUATION_MAX_PERCENTILE,
         },
-        "주의": ("PER 이력은 네이버 연도별 값으로 보통 3년뿐이라 백분위 해상도가 거칠다. "
+        "배점": FUNDA_WEIGHTS,
+        "주의": ("펀더멘탈 점수는 5개 축의 가중 평균이며, 확보된 지표의 배점만으로 환산한다. "
+                "부채비율 절대기준은 금융업(증권·은행·보험)에 맞지 않는다. "
+                "PER 이력은 네이버 연도별 값으로 보통 3년뿐이라 자기과거 방식은 해상도가 거칠다. "
                 f"PER {PER_VALID_MIN}~{PER_VALID_MAX} 범위 밖(적자·이익 미미)은 제외. "
                 "영업이익률·ROE·매출성장률은 DART 연간 재무로 계산(최대 12년), "
                 "자본총계는 연결 기준."),
@@ -865,7 +1062,7 @@ def main():
 
     # ── 텔레그램 리포트 ──
     golden = [r for r in analyzed if "골든존" in r["라벨"]]
-    hidden = [r for r in analyzed if "숨은 저평가" in r["라벨"]]
+    hidden = [r for r in analyzed if "숨은 우량" in r["라벨"]]
 
     lines = [f"🎯 <b>매칭 엔진 리포트</b> "
              f"({datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST)",
@@ -878,12 +1075,13 @@ def main():
             lines.append(
                 f"\n<b>{r['종목명']}</b> ({r['티커']}) · {r['종합점수']}점\n"
                 f"{r['라벨']}\n"
-                f"  · PER {fmt(f_['현재']['PER'])} "
-                f"(과거 {f_['PER이력연수']}년 중 하위 {fmt(f_['백분위']['PER'], '%')})\n"
-                f"  · 영업이익률 {fmt(f_['현재']['영업이익률'], '%')} "
-                f"(백분위 {fmt(f_['백분위']['영업이익률'])})\n"
-                f"  · ROE {fmt(f_['현재']['ROE'], '%')} "
-                f"(백분위 {fmt(f_['백분위']['ROE'])})\n"
+                f"  · 펀더멘탈 {fmt(f_['펀더멘탈점수'])}점 "
+                f"(반영배점 {f_['반영배점']}/100)\n"
+                f"  · PER {fmt(f_['현재']['PER'])} · "
+                f"영업이익률 {fmt(f_['현재']['영업이익률'], '%')} · "
+                f"부채비율 {fmt(f_['현재']['부채비율'], '%')}\n"
+                f"  · 매출성장 {fmt(f_['현재']['매출성장률'], '%')} · "
+                f"배당 {fmt(f_['현재']['시가배당률'], '%')}\n"
                 f"  · 내러티브 {r['내러티브']['내러티브점수']}점 "
                 f"({r['내러티브']['출처수']}개 출처, {r['내러티브']['언급건수']}건)"
             )
@@ -898,14 +1096,15 @@ def main():
                 lines.append(f"  · {r['내러티브']['근거'][0][:110]}")
     else:
         # 왜 0개인지 구분해서 알려준다 (조건 미달 vs 데이터 부족)
-        with_per = [r for r in analyzed if r["펀더멘탈"]["현재"]["PER"] is not None]
+        with_per = [r for r in analyzed
+                    if r["펀더멘탈"].get("펀더멘탈점수") is not None]
         hot = [r for r in analyzed
                if r["내러티브"]["출처수"] >= NARRATIVE_MIN_SOURCES
                and r["내러티브"]["내러티브점수"] >= NARRATIVE_MIN_SCORE]
         loss = [r for r in analyzed if "적자" in r["라벨"]]
         hold = [r for r in analyzed if "보류" in r["라벨"]]
         lines.append("오늘은 골든존 조건을 만족한 종목이 없습니다.")
-        lines.append(f"  · 밸류 비교 가능: {len(with_per)}/{len(analyzed)}"
+        lines.append(f"  · 펀더멘탈 점수 산출: {len(with_per)}/{len(analyzed)}"
                      f" (적자 {len(loss)}개, 판정보류 {len(hold)}개 제외)")
         lines.append(f"  · 내러티브 통과: {len(hot)}/{len(analyzed)}")
         if len(hot) <= 1:
@@ -913,30 +1112,30 @@ def main():
                          "매일 자동 실행이 2주쯤 쌓여야 여러 출처의 겹침이 잡힙니다.")
 
     if hidden:
-        lines.append("\n━━━ <b>숨은 저평가 (아직 소외)</b> ━━━")
+        lines.append("\n━━━ <b>숨은 우량 (아직 소외)</b> ━━━")
         for r in hidden[:5]:
             f_ = r["펀더멘탈"]
-            line = (f"· {r['종목명']} — PER {fmt(f_['현재']['PER'])} "
-                    f"(하위 {fmt(f_['백분위']['PER'], '%')})")
+            line = (f"· {r['종목명']} — 펀더멘탈 {fmt(f_['펀더멘탈점수'])}점 "
+                    f"(PER {fmt(f_['현재']['PER'])})")
             fr = (r.get("지분지표") or {}).get("실질유통비율")
             if fr is not None:
                 line += f" · 유통 {fr}%"
             lines.append(line)
 
-    lines.append(f"\n<i>※ PER 이력은 네이버 연도별 값으로 3년뿐이라 백분위 해상도가 거칩니다. "
-                 f"방향 참고용으로만 보세요. 수익성 지표는 DART 기준 최대 12년.</i>")
+    lines.append(f"\n<i>※ 펀더멘탈 = PER25 + 영업이익률25 + 부채비율20 + 매출성장15 + 배당15. "
+                 f"부채비율 절대기준은 금융업에 맞지 않습니다.</i>")
 
     send_telegram("\n".join(lines))
 
     print(f"\n{'='*50}")
     print(f"분석 완료: {len(analyzed)}종목 / 골든존 {len(golden)}개")
-    got = {
-        "PER": sum(1 for r in analyzed if r["펀더멘탈"]["현재"]["PER"] is not None),
-        "영업이익률": sum(1 for r in analyzed
-                     if r["펀더멘탈"]["현재"]["영업이익률"] is not None),
-        "ROE": sum(1 for r in analyzed if r["펀더멘탈"]["현재"]["ROE"] is not None),
-    }
-    print(f"지표 계산 성공률: " +
+    got = {}
+    for axis in FUNDA_WEIGHTS:
+        got[axis] = sum(1 for r in analyzed
+                        if (r["펀더멘탈"].get("축점수") or {}).get(axis) is not None)
+    ind = sum(1 for r in analyzed if r["펀더멘탈"].get("업종평균PER"))
+    print(f"업종 평균 PER 확보: {ind}/{len(analyzed)}종목")
+    print(f"축별 점수 산출: " +
           " · ".join(f"{k} {v}/{len(analyzed)}" for k, v in got.items()))
     if unmatched:
         print(f"미매칭: {len(unmatched)}개 — {', '.join(unmatched[:10])}")
