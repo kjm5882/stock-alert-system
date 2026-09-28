@@ -628,6 +628,15 @@ _PEER_PER_CACHE = {}
 PEER_MAX = 6              # 경쟁사 조회 상한 (응답에 보통 4~5개가 온다)
 PEER_MIN_VALID = 3        # 중앙값을 쓰려면 최소 이만큼은 유효 PER이 있어야 한다
 
+# 비교군 PER이 이 배수 이상으로 흩어져 있으면 중앙값을 기준으로 쓰지 않는다.
+# 삼성전자 비교군은 [4.41, 7.88, 35.11, 41.09]로 9.3배 흩어져 있었고,
+# 그 중앙값 21.5는 7.88과 35.11 사이의 빈 구간이라 어느 기업도 대표하지 않는다.
+# 네이버 비교군은 '업종'으로 묶인 것이라 사업 성격까지 같다는 보장이 없다.
+PEER_SPREAD_MAX = 4.0
+
+# 비교군 기준을 쓴 종목 / 분산 때문에 버린 종목을 세어 마지막에 보고한다.
+_INDUSTRY_STATS = {"채택": 0, "분산기각": 0, "표본부족": 0}
+
 
 def _per_from_integration(data):
     """integration 응답에서 PER(TTM) 하나만 꺼낸다."""
@@ -670,14 +679,25 @@ def industry_per_from_peers(peer_codes, debug=False):
             pers.append(p)
         time.sleep(0.15)
     if len(pers) < PEER_MIN_VALID:
+        _INDUSTRY_STATS["표본부족"] += 1
         if debug:
-            print(f"    [진단] 동종업계 유효 PER {len(pers)}개 → 기준 미달, 자기 과거로 대체")
+            print(f"    [진단] 동종업계 유효 PER {len(pers)}개 → 표본 부족, 자기 과거로 대체")
         return None, len(pers)
+
     pers.sort()
+    spread = pers[-1] / pers[0] if pers[0] > 0 else 999
+    if spread >= PEER_SPREAD_MAX:
+        _INDUSTRY_STATS["분산기각"] += 1
+        if debug:
+            print(f"    [진단] 동종업계 PER {pers} → 최대/최소 {spread:.1f}배로 흩어져 "
+                  f"중앙값이 대표성 없음, 자기 과거로 대체")
+        return None, len(pers)
+
     n = len(pers)
     med = pers[n // 2] if n % 2 else (pers[n // 2 - 1] + pers[n // 2]) / 2
+    _INDUSTRY_STATS["채택"] += 1
     if debug:
-        print(f"    [진단] 동종업계 PER {pers} → 중앙값 {med:.1f}")
+        print(f"    [진단] 동종업계 PER {pers} (최대/최소 {spread:.1f}배) → 중앙값 {med:.1f}")
     return round(med, 2), len(pers)
 
 
@@ -1260,8 +1280,11 @@ def main():
         got[axis] = sum(1 for r in analyzed
                         if (r["펀더멘탈"].get("축점수") or {}).get(axis) is not None)
     ind = sum(1 for r in analyzed if r["펀더멘탈"].get("업종평균PER"))
+    st = _INDUSTRY_STATS
     print(f"동종업계 PER 기준 확보: {ind}/{len(analyzed)}종목 "
           f"(나머지는 자기 과거 PER로 대체)")
+    print(f"  비교군 판정: 채택 {st['채택']} · "
+          f"분산 기각 {st['분산기각']} · 표본 부족 {st['표본부족']}")
     print(f"축별 점수 산출: " +
           " · ".join(f"{k} {v}/{len(analyzed)}" for k, v in got.items()))
     if unmatched:
