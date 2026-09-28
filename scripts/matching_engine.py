@@ -211,46 +211,79 @@ def score_dividend_yield(v):
 
 
 def score_per(current_per, industry_per, past_pers):
-    """PER 점수. 업종 평균이 있으면 그것과 비교하고, 없으면 자기 과거로 대체한다.
+    """PER 점수. 동종업계 대비와 자기 과거 대비를 '둘 다' 보고 평균한다.
+
+    한쪽만 쓰지 않는 이유:
+      · 동종업계 기준은 비교군이 4~5곳뿐이고, 같은 업종이면 모든 종목이
+        똑같은 기준값을 쓰게 된다. 그러면 PER 점수가 '싼가'가 아니라
+        '어느 업종에 속하나'를 재는 쪽으로 기운다.
+      · 자기 과거 기준은 표본이 3년뿐이라 해상도가 낮다.
+    둘 다 빈약하므로, 서로의 왜곡을 상쇄하도록 평균을 쓴다.
 
     반환: (0~100점, 근거 문구)
     """
     if not is_valid_per(current_per):
-        return None, "PER 무효(적자·이익 미미)"
+        raw = f"{current_per:.1f}" if current_per is not None else "없음"
+        return None, f"PER 무효(적자·이익 미미 / 원본 {raw})"
+
+    scores, notes = [], []
 
     if industry_per and industry_per > 0:
         discount = (industry_per - current_per) / industry_per * 100
-        if discount >= 30:
-            s = 100
-        elif discount >= 10:
-            s = 80
-        elif discount >= -10:
-            s = 55
-        elif discount >= -30:
-            s = 30
-        else:
-            s = 10
-        return s, f"동종업계 {industry_per:.1f} 대비 {discount:+.0f}%"
+        # 구간 절벽(−30%에서 30점 → −31%에서 10점)을 없애려고 선형으로 바꿨다.
+        # 기준점은 기존과 동일: 할인 +30%면 100점, 동일하면 55점, −30%면 10점.
+        s = max(0.0, min(100.0, 55 + discount * 1.5))
+        scores.append(s)
+        notes.append(f"동종업계 {industry_per:.1f} 대비 {discount:+.0f}%")
 
     if len(past_pers) >= MIN_VALID_PER_SAMPLES:
         pct = percentile_rank(current_per, past_pers)
-        return round(100 - pct, 1), f"자기 과거 {len(past_pers)}년 중 백분위 {pct}"
+        scores.append(100 - pct)
+        notes.append(f"자기 과거 {len(past_pers)}년 중 백분위 {pct}")
 
-    return None, "비교 기준 없음"
+    if not scores:
+        return None, "비교 기준 없음"
+    return round(sum(scores) / len(scores), 1), " + ".join(notes)
+
+
+# 영업이익률은 자기 과거 백분위로 재지만, 절대 수준이 나쁘면 상한을 씌운다.
+# 이유: 백분위만 쓰면 적자 기업이 '과거보다 덜 나쁘다'는 이유로 만점을 받는다.
+# (실제로 파두 영업이익률 -70.84%가 100점을 받았다)
+MARGIN_CAPS = [(0.0, 20), (3.0, 60)]   # (영업이익률 상한, 점수 상한)
+
+
+def score_operating_margin(margin, percentile):
+    """영업이익률 점수 = 자기 과거 백분위에 절대 수준 상한을 적용."""
+    if percentile is None:
+        return None
+    score = percentile
+    if margin is not None:
+        for limit, cap in MARGIN_CAPS:
+            if margin < limit:
+                score = min(score, cap)
+                break
+    return round(score, 1)
 
 
 def combine_funda_score(parts):
-    """확보된 지표만으로 100점 만점 환산.
+    """확보된 지표만으로 100점 만점 환산 + 재료가 적으면 점수를 중립쪽으로 당긴다.
 
-    일부 지표가 없는 종목도 나머지로 공정하게 비교할 수 있도록,
-    확보된 지표의 배점 합을 분모로 삼는다.
+    확보된 배점만 분모로 삼으면 지표 2~3개만 가진 종목이 쉽게 만점을 받는다.
+    (파두는 배점 40점어치만으로 100점, 로보티즈는 60점어치로 95점이 나왔다)
+    그래서 '판단 재료가 부족하면 확신도 낮춰야 한다'는 원칙을 점수에 반영한다.
+      보정점수 = 50 + (원점수 - 50) × 확보배점비율
+    배점을 다 채운 종목은 그대로 두고, 절반만 채운 종목은 극단 점수가 절반만 남는다.
+
+    반환: (보정점수, 확보배점, 원점수)
     """
     got = {k: v for k, v in parts.items() if v is not None}
     if not got:
-        return None, 0
+        return None, 0, None
     total_w = sum(FUNDA_WEIGHTS[k] for k in got)
-    score = sum(got[k] * FUNDA_WEIGHTS[k] for k in got) / total_w
-    return round(score, 1), total_w
+    raw = sum(got[k] * FUNDA_WEIGHTS[k] for k in got) / total_w
+    coverage = total_w / sum(FUNDA_WEIGHTS.values())
+    adjusted = 50 + (raw - 50) * coverage
+    return round(adjusted, 1), total_w, round(raw, 1)
 
 
 def percentile_rank(value, history):
@@ -819,12 +852,13 @@ def compute_fundamentals(dart_history, naver_annual, current_per,
                                     list(series["PER"].values()))
     parts = {
         "PER": per_score,
-        "영업이익률": percentiles["영업이익률"],
+        "영업이익률": score_operating_margin(current["영업이익률"],
+                                      percentiles["영업이익률"]),
         "부채비율": score_debt_ratio(current["부채비율"]),
         "매출성장률": score_revenue_growth(current["매출성장률"]),
         "시가배당률": score_dividend_yield(dividend),
     }
-    funda_score, covered_weight = combine_funda_score(parts)
+    funda_score, covered_weight, funda_raw = combine_funda_score(parts)
 
     주의 = []
     if (current["부채비율"] is not None
@@ -842,6 +876,7 @@ def compute_fundamentals(dart_history, naver_annual, current_per,
         "축점수": parts,
         "주의": 주의,
         "펀더멘탈점수": funda_score,
+        "펀더멘탈원점수": funda_raw,
         "반영배점": covered_weight,
         "PER근거": per_note,
         "업종평균PER": industry_per,
@@ -1066,13 +1101,21 @@ def main():
               f"PER {funda['PER이력연수']}년(네이버) · "
               f"현재PER {'O' if current_per else 'X'}")
         s = funda["축점수"]
+        cov_note = ""
+        if funda["반영배점"] and funda["반영배점"] < 100:
+            cov_note = (f" ← 원점수 {fmt(funda.get('펀더멘탈원점수'))}점을 "
+                        f"재료 {funda['반영배점']}/100만큼만 인정")
         print(f"  {label} | 종합 {total}점 | "
-              f"펀더멘탈 {fmt(funda['펀더멘탈점수'])}점 "
-              f"(반영배점 {funda['반영배점']}/100)")
+              f"펀더멘탈 {fmt(funda['펀더멘탈점수'])}점{cov_note}")
         print(f"    PER {fmt(funda['현재']['PER'])} → {fmt(s['PER'])}점 "
               f"[{funda['PER근거']}]")
+        margin_note = f"자기 {funda['이력연수']}년 백분위"
+        if (s["영업이익률"] is not None
+                and funda["백분위"].get("영업이익률") is not None
+                and s["영업이익률"] < funda["백분위"]["영업이익률"]):
+            margin_note += f", 백분위 {fmt(funda['백분위']['영업이익률'])}에서 절대수준 상한 적용"
         print(f"    영업이익률 {fmt(funda['현재']['영업이익률'], '%')} → {fmt(s['영업이익률'])}점 "
-              f"(자기 {funda['이력연수']}년 백분위) · "
+              f"({margin_note}) · "
               f"부채비율 {fmt(funda['현재']['부채비율'], '%')} → {fmt(s['부채비율'])}점")
         print(f"    매출성장 {fmt(funda['현재']['매출성장률'], '%')} → {fmt(s['매출성장률'])}점 · "
               f"배당 {fmt(funda['현재']['시가배당률'], '%')} → {fmt(s['시가배당률'])}점")
