@@ -72,6 +72,16 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scripts/supply_demand_agent.py
 
+      # ── 2.5단계: 지분 구조 (분기 공시라 대부분 캐시로 넘어감) ──
+      - name: 지분 담당자
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/ownership_agent.py
+
       # ── 3단계: 교집합 판정 ──
       # 앞 단계가 실패해도 기존 데이터로 판정은 돌린다.
       - name: 매칭 엔진
