@@ -36,6 +36,11 @@ KST = timezone(timedelta(hours=9))
 # ── 설정 ──────────────────────────────────────────────
 LOOKBACK_DAYS_FOR_MENTIONS = 14   # 피드에서 며칠치 언급 종목을 대상으로 할지
 CACHE_TTL_DAYS = 30               # 분기 공시라 한 달 캐시면 충분
+
+# 판별 로직(법인/개인 구분, 자녀 관계 인식, 플래그 문구 등)을 고칠 때마다 올린다.
+# 저장된 값의 버전이 이와 다르면 캐시 기간이 남아 있어도 다시 계산한다.
+# 이렇게 하지 않으면 코드를 고쳐도 옛 결과가 최대 30일간 그대로 쓰인다.
+SCHEMA_VERSION = 2
 DEBUG_FIRST_N = 2                 # 처음 N개 종목은 원본 응답 구조를 출력
 
 # 플래그 기준
@@ -465,6 +470,12 @@ def main():
     if not targets:
         return
 
+    _store_peek = load_json(OWNERSHIP_FILE, {})
+    구버전 = sum(1 for v in _store_peek.values()
+              if v.get("_schema") != SCHEMA_VERSION)
+    if 구버전:
+        print(f"판별 로직 변경(v{SCHEMA_VERSION}) — 기존 {구버전}종목을 다시 계산합니다.")
+
     corp_map = build_corp_map()
     store = load_json(OWNERSHIP_FILE, {})
     # 사업보고서는 이듬해 3월 공시 → 작년 기준으로 조회
@@ -480,7 +491,7 @@ def main():
             continue
 
         cached = store.get(ticker)
-        if cached:
+        if cached and cached.get("_schema") == SCHEMA_VERSION:
             try:
                 age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["_갱신"])
                 if age < timedelta(days=CACHE_TTL_DAYS):
@@ -515,6 +526,7 @@ def main():
         flags, metrics = build_flags(sh, st, owner_age)
 
         store[ticker] = {
+            "_schema": SCHEMA_VERSION,
             "_갱신": datetime.now(timezone.utc).isoformat(),
             "종목명": name,
             "플래그": flags,
