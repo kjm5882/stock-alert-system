@@ -230,7 +230,7 @@ def score_per(current_per, industry_per, past_pers):
             s = 30
         else:
             s = 10
-        return s, f"업종평균 {industry_per:.1f} 대비 {discount:+.0f}%"
+        return s, f"동종업계 {industry_per:.1f} 대비 {discount:+.0f}%"
 
     if len(past_pers) >= MIN_VALID_PER_SAMPLES:
         pct = percentile_rank(current_per, past_pers)
@@ -579,12 +579,71 @@ def fetch_naver_annual_metrics(ticker, debug=False):
     return result
 
 
+# 동종업계 PER을 구할 때 같은 종목을 여러 번 조회하지 않도록 실행 중에만 기억한다.
+# (여러 종목이 같은 경쟁사를 공유하므로 호출 수가 크게 줄어든다)
+_PEER_PER_CACHE = {}
+PEER_MAX = 6              # 경쟁사 조회 상한 (응답에 보통 4~5개가 온다)
+PEER_MIN_VALID = 3        # 중앙값을 쓰려면 최소 이만큼은 유효 PER이 있어야 한다
+
+
+def _per_from_integration(data):
+    """integration 응답에서 PER(TTM) 하나만 꺼낸다."""
+    for row in data.get("totalInfos", []):
+        if row.get("code") == "per":
+            return to_number(re.sub(r"[^\d.\-]", "", str(row.get("value"))))
+    return None
+
+
+def fetch_peer_per(code):
+    """경쟁사 한 종목의 PER. 실패하면 None (캐시에도 None으로 남겨 재시도하지 않는다)."""
+    if code in _PEER_PER_CACHE:
+        return _PEER_PER_CACHE[code]
+    per = None
+    try:
+        res = requests.get(f"https://m.stock.naver.com/api/stock/{code}/integration",
+                           headers=NAVER_HEADERS, timeout=15)
+        if res.status_code == 200:
+            per = _per_from_integration(res.json())
+    except Exception:
+        per = None
+    if not is_valid_per(per):
+        per = None
+    _PEER_PER_CACHE[code] = per
+    return per
+
+
+def industry_per_from_peers(peer_codes, debug=False):
+    """동일업종 비교군의 PER 중앙값.
+
+    네이버 integration의 industryCompareInfo는 '업종 평균'이 아니라
+    경쟁사 목록(리스트)으로 오고, 각 항목에는 주가·시총만 있고 PER이 없다.
+    그래서 경쟁사별로 PER을 따로 받아 중앙값을 낸다.
+    평균이 아니라 중앙값인 이유: 한 종목의 비정상 PER이 기준을 흔들지 않게 하려고.
+    """
+    pers = []
+    for code in peer_codes[:PEER_MAX]:
+        p = fetch_peer_per(code)
+        if p is not None:
+            pers.append(p)
+        time.sleep(0.15)
+    if len(pers) < PEER_MIN_VALID:
+        if debug:
+            print(f"    [진단] 동종업계 유효 PER {len(pers)}개 → 기준 미달, 자기 과거로 대체")
+        return None, len(pers)
+    pers.sort()
+    n = len(pers)
+    med = pers[n // 2] if n % 2 else (pers[n // 2 - 1] + pers[n // 2]) / 2
+    if debug:
+        print(f"    [진단] 동종업계 PER {pers} → 중앙값 {med:.1f}")
+    return round(med, 2), len(pers)
+
+
 def fetch_naver_current(ticker, debug=False):
-    """네이버 integration → 현재가, 시가총액, 네이버 자체 PER(TTM) 등."""
+    """네이버 integration → 현재가, 시가총액, 네이버 자체 PER(TTM), 동종업계 PER."""
     url = f"https://m.stock.naver.com/api/stock/{ticker}/integration"
     info = {"현재가": None, "시가총액": None, "네이버PER": None,
             "추정PER": None, "종목명확인": None,
-            "업종명": None, "업종평균PER": None}
+            "업종명": None, "업종평균PER": None, "업종비교군수": 0}
     try:
         res = requests.get(url, headers=NAVER_HEADERS, timeout=20)
         if debug:
@@ -612,40 +671,54 @@ def fetch_naver_current(ticker, debug=False):
         elif code == "lastClosePrice":
             info["현재가"] = to_number(value)
 
-    # 업종 평균 PER — 있으면 PER 점수의 기준으로 쓴다.
-    # 응답 구조를 문서로 확인하지 못했으므로 여러 형태를 방어적으로 살핀다.
+    # 이 종목의 PER을 캐시에 넣어 둔다.
+    # 다른 종목의 비교군에 이 종목이 들어올 때 다시 조회하지 않아도 된다.
+    if ticker not in _PEER_PER_CACHE:
+        _PEER_PER_CACHE[ticker] = (info["네이버PER"]
+                                   if is_valid_per(info["네이버PER"]) else None)
+
+    # 동종업계 PER 기준 만들기.
+    # industryCompareInfo는 dict가 아니라 '경쟁사 목록(리스트)'으로 온다.
+    # 항목에는 주가·시총만 있고 PER이 없어서, 코드만 뽑아 따로 조회한다.
     cmp_info = data.get("industryCompareInfo")
-    if cmp_info:
-        if debug:
-            print(f"    [진단] industryCompareInfo 구조: "
-                  f"{json.dumps(cmp_info, ensure_ascii=False)[:500]}")
+    peer_codes = []
+    if isinstance(cmp_info, list):
+        for item in cmp_info:
+            if not isinstance(item, dict):
+                continue
+            code = item.get("itemCode") or item.get("reutersCode")
+            if code and code != ticker and code not in peer_codes:
+                peer_codes.append(str(code))
+    elif isinstance(cmp_info, dict):
+        # 혹시 구조가 바뀌어 dict로 오면 평균 PER 필드를 직접 찾아본다
         info["업종명"] = (cmp_info.get("industryName")
                        or cmp_info.get("industryCodeName")
                        or cmp_info.get("name"))
-        # 업종 평균 PER이 담길 만한 키 후보를 순서대로 찾는다
-        for key in ("industryPer", "industryPersonPer", "upjongPer",
-                    "averagePer", "industryAvgPer", "per"):
+        for key in ("industryPer", "upjongPer", "averagePer", "industryAvgPer"):
             v = to_number(re.sub(r"[^\d.\-]", "", str(cmp_info.get(key))))
             if v and v > 0:
                 info["업종평균PER"] = v
                 break
-        # 중첩 구조일 수 있어 한 단계 더 들어가 본다
-        if info["업종평균PER"] is None:
-            for sub in cmp_info.values():
-                if isinstance(sub, dict):
-                    for key in ("industryPer", "per", "averagePer"):
-                        v = to_number(re.sub(r"[^\d.\-]", "", str(sub.get(key))))
-                        if v and v > 0:
-                            info["업종평균PER"] = v
-                            break
-                if info["업종평균PER"]:
-                    break
+        for item in (cmp_info.get("stocks") or cmp_info.get("items") or []):
+            if isinstance(item, dict):
+                code = item.get("itemCode") or item.get("reutersCode")
+                if code and code != ticker:
+                    peer_codes.append(str(code))
+
+    if info["업종평균PER"] is None and peer_codes:
+        med, n_valid = industry_per_from_peers(peer_codes, debug=debug)
+        if med:
+            info["업종평균PER"] = med
+            info["업종비교군수"] = n_valid
 
     if info.get("업종명") is None:
-        info["업종명"] = data.get("industryCodeType") or data.get("industryCode")
+        info["업종명"] = (data.get("industryCodeType")
+                       or data.get("industryCode")
+                       or data.get("industryName"))
 
     if debug:
-        print(f"    [진단] 업종={info['업종명']} 업종평균PER={info['업종평균PER']}")
+        print(f"    [진단] 업종={info['업종명']} 비교군={len(peer_codes)}개 "
+              f"동종업계PER={info['업종평균PER']}")
     return info
 
 
@@ -1134,7 +1207,8 @@ def main():
         got[axis] = sum(1 for r in analyzed
                         if (r["펀더멘탈"].get("축점수") or {}).get(axis) is not None)
     ind = sum(1 for r in analyzed if r["펀더멘탈"].get("업종평균PER"))
-    print(f"업종 평균 PER 확보: {ind}/{len(analyzed)}종목")
+    print(f"동종업계 PER 기준 확보: {ind}/{len(analyzed)}종목 "
+          f"(나머지는 자기 과거 PER로 대체)")
     print(f"축별 점수 산출: " +
           " · ".join(f"{k} {v}/{len(analyzed)}" for k, v in got.items()))
     if unmatched:
