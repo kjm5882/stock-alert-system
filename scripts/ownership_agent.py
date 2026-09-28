@@ -56,8 +56,12 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # 최대주주 현황의 '관계' 필드에서 자녀를 식별하는 표현들.
 # DART 표기가 회사마다 달라 여러 형태를 모두 잡는다.
-CHILD_RELATIONS = ["자녀", "장남", "차남", "삼남", "장녀", "차녀", "삼녀",
-                   "아들", "딸", "자부", "사위"]
+# DART의 '관계' 표기는 회사마다 다르다. '자' 한 글자로 쓰는 곳이 많아
+# 정확히 일치하는 경우와 부분 일치하는 경우를 나눠서 본다.
+# '자부'(며느리)·'사위'는 직계비속이 아니므로 제외한다.
+CHILD_EXACT = {"자", "녀", "자녀", "아들", "딸", "손", "손자", "손녀", "직계비속"}
+CHILD_PARTIAL = ["장남", "차남", "삼남", "사남", "장녀", "차녀", "삼녀", "사녀",
+                 "자녀", "손자", "손녀"]
 SELF_RELATIONS = ["본인", "최대주주"]
 
 # 법인 최대주주를 식별하는 표현 (지주사 구조 판별용)
@@ -105,6 +109,19 @@ def pick(row, *candidates):
     return None
 
 
+def is_child_relation(relate):
+    """관계 표기가 자녀(직계비속)인지 판별."""
+    r = (relate or "").replace(" ", "").strip()
+    if not r:
+        return False
+    if r in CHILD_EXACT:
+        return True
+    # '자부'·'사위'는 직계비속이 아니다
+    if r in ("자부", "사위", "며느리"):
+        return False
+    return any(k in r for k in CHILD_PARTIAL)
+
+
 def is_corporation(name):
     """최대주주 이름이 개인이 아니라 법인인지 판별.
 
@@ -121,7 +138,12 @@ def is_corporation(name):
         return False
     if any(m in name for m in CORP_MARKERS):
         return True
-    return not re.fullmatch(r"[가-힣]{2,3}", name.strip())
+    # DART는 개인 이름을 '임 창 완'처럼 띄어 쓰는 경우가 있어 공백을 먼저 없앤다
+    # 공백을 없앤 뒤 순수 한글 2~3자면 개인으로 본다.
+    # 4자까지 넓히면 '삼성물산'·'현대건설' 같은 4자 사명이 개인으로 잘못 잡힌다.
+    # 4자 이름의 개인 오너는 아래 임원 명단 대조 단계에서 정정된다.
+    compact = name.replace(" ", "").strip()
+    return not re.fullmatch(r"[가-힣]{2,3}", compact)
 
 
 # ── DART 호출 ─────────────────────────────────────────
@@ -199,7 +221,7 @@ def analyze_shareholders(corp_code, year, debug=False):
 
         if any(k in relate for k in SELF_RELATIONS) and owner_name is None:
             owner_name, owner_rate = name, rate
-        elif any(k in relate for k in CHILD_RELATIONS):
+        elif is_child_relation(relate):
             child_rate += rate
 
     if not members:
@@ -318,16 +340,22 @@ def build_flags(sh, st, owner_age):
             flags.append(f"🔒 유통물량 희소 {float_rate}%")
 
     if sh:
-        metrics["오너지분율"] = sh["오너_지분율"]
+        # '본인'과 '특수관계인 포함 합계'는 다른 값이다. 유통비율 계산에는 합계를 쓰므로
+        # 둘을 구분해 담아야 화면에서 숫자가 맞아떨어진다.
+        metrics["최대주주본인"] = sh["오너_지분율"]
         metrics["최대주주등합계"] = sh["최대주주등_합계_지분율"]
+        metrics["최대주주명"] = sh["오너명"]
         metrics["승계율"] = sh["승계율"]
         metrics["지주사구조"] = sh["지주사구조"]
 
         if sh["지주사구조"]:
-            flags.append(f"🏢 지주사 구조 ({sh['오너명']})")
+            # 법인이 최대주주라는 사실과 '지주회사 체제'는 다르다.
+            # 국민연금·계열사·외국법인이 최대주주인 경우도 여기 포함되므로
+            # 사실만 표시하고 해석은 붙이지 않는다.
+            flags.append(f"🏢 법인 최대주주 ({sh['오너명']})")
         else:
             if sh["최대주주등_합계_지분율"] < OWNER_WEAK_THRESHOLD:
-                flags.append(f"⚠️ 오너 지분 취약 {sh['최대주주등_합계_지분율']}%")
+                flags.append(f"⚠️ 최대주주등 지분 취약 {sh['최대주주등_합계_지분율']}%")
             # 승계 미완료 판단은 오너 연령이 확인될 때만 한다.
             # 나이를 모르면 '아직 승계 안 함'이 의미 있는 신호인지 알 수 없다.
             if (sh["승계율"] is not None
@@ -336,8 +364,10 @@ def build_flags(sh, st, owner_age):
                 flags.append(
                     f"⏳ 승계 미완료 (자녀 {sh['자녀_지분율']}%, 오너 {owner_age}세)")
 
-    if st and st["자기주식비율"] >= 5:
-        flags.append(f"💼 자기주식 {st['자기주식비율']}%")
+    if st:
+        metrics["자기주식비율"] = st["자기주식비율"]
+        if st["자기주식비율"] >= 5:
+            flags.append(f"💼 자기주식 {st['자기주식비율']}%")
 
     if owner_age:
         metrics["오너연령"] = owner_age
@@ -495,18 +525,58 @@ def main():
         }
         updated += 1
 
+        # 유통 + 최대주주등 + 자기주식 = 100%가 되도록 세 값을 나란히 보여준다.
+        # 어느 한 값만 보면 숫자가 안 맞아 보여 혼란을 준다.
+        parts = []
+        if "실질유통비율" in metrics:
+            parts.append(f"유통 {metrics['실질유통비율']}%")
+        if "최대주주등합계" in metrics:
+            label = "최대주주등"
+            detail = ""
+            if metrics.get("최대주주본인") is not None and \
+               abs(metrics["최대주주본인"] - metrics["최대주주등합계"]) > 0.01:
+                detail = f" (본인 {metrics['최대주주본인']}%)"
+            parts.append(f"{label} {metrics['최대주주등합계']}%{detail}")
+        if metrics.get("자기주식비율"):
+            parts.append(f"자기주식 {metrics['자기주식비율']}%")
         summary = " · ".join(flags) if flags else "특이사항 없음"
-        float_txt = (f"유통 {metrics['실질유통비율']}%"
-                     if "실질유통비율" in metrics else "유통 -")
-        owner_txt = (f"오너 {metrics['오너지분율']}%"
-                     if "오너지분율" in metrics else "오너 -")
-        print(f"  {float_txt} · {owner_txt} · {summary}")
+        print(f"  {' · '.join(parts)}  →  {summary}")
         time.sleep(0.25)
 
     save_json(OWNERSHIP_FILE, store)
 
     print(f"\n{'=' * 50}")
     print(f"갱신 {updated}종목 · 캐시 재사용 {skipped}종목 · 저장 {len(store)}종목")
+
+    # 승계 플래그가 안 뜨는 이유를 구분한다.
+    # (가) 지주사라 해당 없음  (나) 자녀를 못 찾음  (다) 자녀는 있으나 오너 나이 미달/미확인
+    holding = sum(1 for v in store.values()
+                  if (v.get("최대주주") or {}).get("지주사구조"))
+    개인오너 = [v for v in store.values()
+              if v.get("최대주주") and not v["최대주주"]["지주사구조"]]
+    자녀보유 = [v for v in 개인오너 if (v["최대주주"].get("자녀_지분율") or 0) > 0]
+    나이확인 = [v for v in 개인오너 if v.get("지표", {}).get("오너연령")]
+    승계플래그 = sum(1 for v in store.values()
+                 if any("승계" in f for f in (v.get("플래그") or [])))
+
+    print(f"개인 오너 {len(개인오너)}종목 · 지주사 구조 {holding}종목")
+    print(f"  자녀 지분 확인 {len(자녀보유)}종목 · 오너 연령 확인 {len(나이확인)}종목 "
+          f"· 승계 플래그 {승계플래그}종목")
+    # 관계 표기 분포를 항상 보여준다. 자녀 판별이 제대로 되는지 확인하는 근거가 된다.
+    from collections import Counter
+    관계분포 = Counter()
+    for v in store.values():
+        for m in ((v.get("최대주주") or {}).get("구성원") or []):
+            if m.get("관계"):
+                관계분포[m["관계"]] += 1
+    if 관계분포:
+        top = 관계분포.most_common(18)
+        print(f"  [진단] 관계 표기 분포: "
+              + ", ".join(f"{k}({c})" for k, c in top))
+        미인식 = [k for k, _ in top
+               if k not in ("본인", "최대주주 본인") and not is_child_relation(k)]
+        if 미인식:
+            print(f"  [진단] 자녀로 인식되지 않은 표기: {미인식}")
 
     # 유통물량이 특히 희소한 종목은 따로 알려준다 (수급 해석에 직접 영향)
     scarce = [(v["종목명"], v["지표"]["실질유통비율"])
