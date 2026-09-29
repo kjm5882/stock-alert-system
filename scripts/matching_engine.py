@@ -1198,13 +1198,30 @@ def main():
     }
     save_json(RESULTS_FILE, payload)
 
+    # ── 판정 이력 적재 ──
+    # 나중에 '이 판정이 맞았나'를 채점하려면 판정 당시의 값이 그대로 남아 있어야 한다.
+    # 지나간 날은 되돌려 만들 수 없으므로, 골든존뿐 아니라 분석한 전 종목을 남긴다.
+    # 관망·숨은우량까지 있어야 '골든존이 관망보다 나았나'라는 비교가 성립한다.
+    # 골든존만 모아두면 시장이 오른 것인지 엔진이 맞힌 것인지 영원히 구분할 수 없다.
     os.makedirs(DATA_DIR, exist_ok=True)
+    today_kst = datetime.now(KST).strftime("%Y-%m-%d")
     with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "timestamp": payload["생성시각"],
-            "골든존": [r["종목명"] for r in analyzed if "골든존" in r["라벨"]],
-            "분석종목수": len(analyzed),
-        }, ensure_ascii=False) + "\n")
+        for r in analyzed:
+            f.write(json.dumps({
+                "날짜": today_kst,
+                "timestamp": payload["생성시각"],
+                "티커": r["티커"],
+                "종목명": r["종목명"],
+                "라벨": r["라벨"],
+                "종합점수": r["종합점수"],
+                "펀더멘탈점수": r["펀더멘탈점수"],
+                "펀더멘탈반영배점": r["펀더멘탈"].get("반영배점"),
+                "내러티브점수": r["내러티브"].get("내러티브점수"),
+                "내러티브출처수": r["내러티브"].get("출처수"),
+                "수급신호": bool(r["수급신호"]),
+                "지분플래그수": len(r.get("지분플래그") or []),
+                "판정일종가": r["현재가"],
+            }, ensure_ascii=False) + "\n")
 
     # ── 텔레그램 리포트 ──
     golden = [r for r in analyzed if "골든존" in r["라벨"]]
