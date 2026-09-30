@@ -1196,7 +1196,10 @@ def main():
                 line += f" · 유통 {fr}%"
             lines.append(line)
 
-    lines.append(f"\n<i>※ 펀더멘탈 = 영업이익률35 + 부채비율25 + 매출성장20 + 배당20. "
+    # 배점 문구는 FUNDA_WEIGHTS에서 직접 만든다.
+    # 손으로 적어두면 배점을 바꿀 때마다 어긋난다 (실제로 한 번 어긋났다).
+    weight_text = " + ".join(f"{k}{v}" for k, v in FUNDA_WEIGHTS.items())
+    lines.append(f"\n<i>※ 펀더멘탈 = {weight_text}. "
                  f"PER은 점수에 넣지 않고 숫자만 보여줍니다 — 비교 기준이 마땅치 않아서입니다. "
                  f"부채비율 절대기준은 금융업에 맞지 않습니다.</i>")
 
