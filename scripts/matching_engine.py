@@ -44,6 +44,13 @@ KST = timezone(timedelta(hours=9))
 
 # ── 설정 ──────────────────────────────────────────────
 LOOKBACK_DAYS_FOR_MENTIONS = 14   # 피드에서 며칠치 언급을 볼지
+
+# 수급 신호의 유효기간. 내러티브와 따로 둔다.
+# 블로그 언급은 2주 전 것도 '요즘 얘기되는 종목'으로 의미가 있지만,
+# '외국인이 3일 연속 순매수했다'는 신호는 2주가 지나면 이미 끝난 얘기다.
+# 같은 14일을 쓰던 동안 95종목 중 59개(62%)가 수급 20점을 받았다.
+# 절반 넘게 받는 가산점은 변별력이 아니라 기본급이다.
+SUPPLY_SIGNAL_MAX_AGE_DAYS = 5
 MIN_HISTORY_YEARS = 3             # 이력이 이보다 적으면 판단 제외
 DEBUG_FIRST_N = 2                 # 처음 N개 종목은 원본 응답까지 상세 출력 (문제 추적용)
 
@@ -65,12 +72,17 @@ MIN_VALID_PER_SAMPLES = 3
 #       조선 5%와 바이오 45%를 같은 자로 잴 수 없다. 자기 과거와 비교해야 한다.
 #   PER : 업종 평균과 비교(가능하면). 자기 과거는 표본이 3년뿐이라 해상도가 낮고,
 #         절대 기준은 업종 편향을 만든다.
+# PER은 여기 없다. 점수로 바꾸지 않고 숫자를 그대로 보여주기로 했기 때문이다.
+# 이유는 summarize_per() 주석 참고.
+# 영업이익률에 절반을 준 것은 '그 기업의 과거 경험 수준 대비 지금 어디인가'가
+# 이 시스템의 판단 기준 자체이기 때문이다. 나머지 셋은 보조 지표다.
+# 부채비율이 10점으로 낮은 것은 의도된 선택이다 — 재무 안정성보다
+# 수익성의 위치를 우선해서 본다.
 FUNDA_WEIGHTS = {
-    "PER": 25,
-    "영업이익률": 25,
-    "부채비율": 20,
-    "매출성장률": 15,
-    "시가배당률": 15,
+    "영업이익률": 50,
+    "부채비율": 10,
+    "매출성장률": 20,
+    "시가배당률": 20,
 }
 FUNDA_GOOD_THRESHOLD = 60      # 펀더멘탈 점수가 이 이상이면 '양호'로 본다
 
@@ -198,7 +210,7 @@ def score_revenue_growth(v):
 def score_dividend_yield(v):
     """시가배당률 — 높을수록 좋다. 무배당은 0점.
 
-    성장주에 불리한 지표라는 점은 감안하고 배점을 15점으로 제한했다.
+    성장주에 불리한 지표라는 점은 감안해 배점을 20점으로 제한했다.
     """
     if v is None:
         return None
@@ -213,63 +225,46 @@ def score_dividend_yield(v):
     return 0
 
 
-def score_per(current_per, industry_per, past_pers):
-    """PER 점수. 동종업계 대비와 자기 과거 대비를 '둘 다' 보고 평균한다.
+def summarize_per(current_per, past_pers):
+    """PER은 점수로 바꾸지 않고 '보여주기 위한 값'만 만든다.
 
-    한쪽만 쓰지 않는 이유:
-      · 동종업계 기준은 비교군이 4~5곳뿐이고, 같은 업종이면 모든 종목이
-        똑같은 기준값을 쓰게 된다. 그러면 PER 점수가 '싼가'가 아니라
-        '어느 업종에 속하나'를 재는 쪽으로 기운다.
-      · 자기 과거 기준은 표본이 3년뿐이라 해상도가 낮다.
-    둘 다 빈약하므로, 서로의 왜곡을 상쇄하도록 평균을 쓴다.
+    왜 점수를 매기지 않는가:
+      PER을 점수로 바꾸려면 '무엇과 비교해 몇 번째인가'가 필요하다.
+      그런데 비교 대상이 셋 다 부실했다.
+        · 동종업계 — 네이버 비교군 4~5곳 중 95종목 가운데 51개가
+          PER이 4배 넘게 흩어져 중앙값이 아무도 대표하지 못했다.
+          같은 업종이라도 기술과 주력 제품이 다르다는 뜻이다.
+        · 자기 과거 — 네이버가 연도별 PER을 3년치만 준다.
+          표본 3개면 백분위가 0·33·67·100 네 등급뿐이라 해상도가 없다.
+        · 절대 기준 — 업종 편향이 생긴다. 바이오 40과 은행 5를 같은 자로 잰다.
+      잴 수 없는 것을 억지로 점수화하면 그 오차가 종합점수까지 오염시킨다.
+      그래서 숫자를 그대로 보여주고 판단은 사람이 한다.
 
-    반환: (0~100점, 근거 문구)
+      매일의 PER은 이력 파일에 쌓이고 있다. 1년쯤 지나 관측치가
+      250개쯤 모이면 그때 '자기 과거 대비'를 제대로 잴 수 있다.
+
+    반환: 표시용 dict
     """
-    if not is_valid_per(current_per):
+    valid_past = [p for p in past_pers if is_valid_per(p)]
+    summary = {
+        "현재": current_per if is_valid_per(current_per) else None,
+        "현재원본": current_per,
+        "과거평균": round(statistics.mean(valid_past), 1) if valid_past else None,
+        "과거중앙값": round(statistics.median(valid_past), 1) if valid_past else None,
+        "과거연수": len(valid_past),
+    }
+    # 사람이 한눈에 읽을 문구
+    if summary["현재"] is None:
         raw = f"{current_per:.1f}" if current_per is not None else "없음"
-        return None, f"PER 무효(적자·이익 미미 / 원본 {raw})"
-
-    scores, notes = [], []
-
-    if industry_per and industry_per > 0:
-        discount = (industry_per - current_per) / industry_per * 100
-        # 구간 절벽(−30%에서 30점 → −31%에서 10점)을 없애려고 선형으로 바꿨다.
-        # 기준점은 기존과 동일: 할인 +30%면 100점, 동일하면 55점, −30%면 10점.
-        s = max(0.0, min(100.0, 55 + discount * 1.5))
-        scores.append(s)
-        notes.append(f"동종업계 {industry_per:.1f} 대비 {discount:+.0f}%")
-
-    if len(past_pers) >= MIN_VALID_PER_SAMPLES:
-        pct = percentile_rank(current_per, past_pers)
-        scores.append(100 - pct)
-        notes.append(f"자기 과거 {len(past_pers)}년 중 백분위 {pct}")
-
-    if not scores:
-        return None, "비교 기준 없음"
-    # 두 기준이 정반대를 가리키면 평균은 '보통(50점)'이 되는데,
-    # 이건 진짜 보통인 것과 뜻이 전혀 다르므로 구분해서 표시한다.
-    if len(scores) == 2 and abs(scores[0] - scores[1]) >= 60:
-        notes.append("⚠︎ 두 기준 엇갈림")
-    return round(sum(scores) / len(scores), 1), " + ".join(notes)
-
-
-# 영업이익률은 자기 과거 백분위로 재지만, 절대 수준이 나쁘면 상한을 씌운다.
-# 이유: 백분위만 쓰면 적자 기업이 '과거보다 덜 나쁘다'는 이유로 만점을 받는다.
-# (실제로 파두 영업이익률 -70.84%가 100점을 받았다)
-MARGIN_CAPS = [(0.0, 20), (3.0, 60)]   # (영업이익률 상한, 점수 상한)
-
-
-def score_operating_margin(margin, percentile):
-    """영업이익률 점수 = 자기 과거 백분위에 절대 수준 상한을 적용."""
-    if percentile is None:
-        return None
-    score = percentile
-    if margin is not None:
-        for limit, cap in MARGIN_CAPS:
-            if margin < limit:
-                score = min(score, cap)
-                break
-    return round(score, 1)
+        summary["표시"] = f"PER 판단보류 (원본 {raw} — 적자이거나 이익이 미미)"
+    elif summary["과거중앙값"]:
+        diff = (summary["현재"] / summary["과거중앙값"] - 1) * 100
+        summary["표시"] = (f"PER {summary['현재']:.1f} "
+                         f"(과거 {summary['과거연수']}년 중앙값 "
+                         f"{summary['과거중앙값']:.1f} 대비 {diff:+.0f}%)")
+    else:
+        summary["표시"] = f"PER {summary['현재']:.1f} (비교할 과거 없음)"
+    return summary
 
 
 def combine_funda_score(parts):
@@ -403,7 +398,7 @@ def load_supply_signals():
     if not os.path.exists(SUPPLY_SIGNALS_FILE):
         return {}
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS_FOR_MENTIONS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=SUPPLY_SIGNAL_MAX_AGE_DAYS)
     latest = {}
     with open(SUPPLY_SIGNALS_FILE, "r", encoding="utf-8") as f:
         for line in f:
@@ -622,91 +617,12 @@ def fetch_naver_annual_metrics(ticker, debug=False):
     return result
 
 
-# 동종업계 PER을 구할 때 같은 종목을 여러 번 조회하지 않도록 실행 중에만 기억한다.
-# (여러 종목이 같은 경쟁사를 공유하므로 호출 수가 크게 줄어든다)
-_PEER_PER_CACHE = {}
-PEER_MAX = 6              # 경쟁사 조회 상한 (응답에 보통 4~5개가 온다)
-PEER_MIN_VALID = 3        # 중앙값을 쓰려면 최소 이만큼은 유효 PER이 있어야 한다
-
-# 비교군 PER이 이 배수 이상으로 흩어져 있으면 중앙값을 기준으로 쓰지 않는다.
-# 삼성전자 비교군은 [4.41, 7.88, 35.11, 41.09]로 9.3배 흩어져 있었고,
-# 그 중앙값 21.5는 7.88과 35.11 사이의 빈 구간이라 어느 기업도 대표하지 않는다.
-# 네이버 비교군은 '업종'으로 묶인 것이라 사업 성격까지 같다는 보장이 없다.
-PEER_SPREAD_MAX = 4.0
-
-# 비교군 기준을 쓴 종목 / 분산 때문에 버린 종목을 세어 마지막에 보고한다.
-_INDUSTRY_STATS = {"채택": 0, "분산기각": 0, "표본부족": 0}
-
-
-def _per_from_integration(data):
-    """integration 응답에서 PER(TTM) 하나만 꺼낸다."""
-    for row in data.get("totalInfos", []):
-        if row.get("code") == "per":
-            return to_number(re.sub(r"[^\d.\-]", "", str(row.get("value"))))
-    return None
-
-
-def fetch_peer_per(code):
-    """경쟁사 한 종목의 PER. 실패하면 None (캐시에도 None으로 남겨 재시도하지 않는다)."""
-    if code in _PEER_PER_CACHE:
-        return _PEER_PER_CACHE[code]
-    per = None
-    try:
-        res = requests.get(f"https://m.stock.naver.com/api/stock/{code}/integration",
-                           headers=NAVER_HEADERS, timeout=15)
-        if res.status_code == 200:
-            per = _per_from_integration(res.json())
-    except Exception:
-        per = None
-    if not is_valid_per(per):
-        per = None
-    _PEER_PER_CACHE[code] = per
-    return per
-
-
-def industry_per_from_peers(peer_codes, debug=False):
-    """동일업종 비교군의 PER 중앙값.
-
-    네이버 integration의 industryCompareInfo는 '업종 평균'이 아니라
-    경쟁사 목록(리스트)으로 오고, 각 항목에는 주가·시총만 있고 PER이 없다.
-    그래서 경쟁사별로 PER을 따로 받아 중앙값을 낸다.
-    평균이 아니라 중앙값인 이유: 한 종목의 비정상 PER이 기준을 흔들지 않게 하려고.
-    """
-    pers = []
-    for code in peer_codes[:PEER_MAX]:
-        p = fetch_peer_per(code)
-        if p is not None:
-            pers.append(p)
-        time.sleep(0.15)
-    if len(pers) < PEER_MIN_VALID:
-        _INDUSTRY_STATS["표본부족"] += 1
-        if debug:
-            print(f"    [진단] 동종업계 유효 PER {len(pers)}개 → 표본 부족, 자기 과거로 대체")
-        return None, len(pers)
-
-    pers.sort()
-    spread = pers[-1] / pers[0] if pers[0] > 0 else 999
-    if spread >= PEER_SPREAD_MAX:
-        _INDUSTRY_STATS["분산기각"] += 1
-        if debug:
-            print(f"    [진단] 동종업계 PER {pers} → 최대/최소 {spread:.1f}배로 흩어져 "
-                  f"중앙값이 대표성 없음, 자기 과거로 대체")
-        return None, len(pers)
-
-    n = len(pers)
-    med = pers[n // 2] if n % 2 else (pers[n // 2 - 1] + pers[n // 2]) / 2
-    _INDUSTRY_STATS["채택"] += 1
-    if debug:
-        print(f"    [진단] 동종업계 PER {pers} (최대/최소 {spread:.1f}배) → 중앙값 {med:.1f}")
-    return round(med, 2), len(pers)
-
-
 def fetch_naver_current(ticker, debug=False):
     """네이버 integration → 현재가, 시가총액, 네이버 자체 PER(TTM), 동종업계 PER."""
     url = f"https://m.stock.naver.com/api/stock/{ticker}/integration"
     info = {"현재가": None, "시가총액": None, "네이버PER": None,
             "추정PER": None, "종목명확인": None,
-            "업종명": None, "업종평균PER": None, "업종비교군수": 0}
+            "업종명": None}
     try:
         res = requests.get(url, headers=NAVER_HEADERS, timeout=20)
         if debug:
@@ -734,45 +650,11 @@ def fetch_naver_current(ticker, debug=False):
         elif code == "lastClosePrice":
             info["현재가"] = to_number(value)
 
-    # 이 종목의 PER을 캐시에 넣어 둔다.
-    # 다른 종목의 비교군에 이 종목이 들어올 때 다시 조회하지 않아도 된다.
-    if ticker not in _PEER_PER_CACHE:
-        _PEER_PER_CACHE[ticker] = (info["네이버PER"]
-                                   if is_valid_per(info["네이버PER"]) else None)
-
-    # 동종업계 PER 기준 만들기.
-    # industryCompareInfo는 dict가 아니라 '경쟁사 목록(리스트)'으로 온다.
-    # 항목에는 주가·시총만 있고 PER이 없어서, 코드만 뽑아 따로 조회한다.
-    cmp_info = data.get("industryCompareInfo")
-    peer_codes = []
-    if isinstance(cmp_info, list):
-        for item in cmp_info:
-            if not isinstance(item, dict):
-                continue
-            code = item.get("itemCode") or item.get("reutersCode")
-            if code and code != ticker and code not in peer_codes:
-                peer_codes.append(str(code))
-    elif isinstance(cmp_info, dict):
-        # 혹시 구조가 바뀌어 dict로 오면 평균 PER 필드를 직접 찾아본다
-        info["업종명"] = (cmp_info.get("industryName")
-                       or cmp_info.get("industryCodeName")
-                       or cmp_info.get("name"))
-        for key in ("industryPer", "upjongPer", "averagePer", "industryAvgPer"):
-            v = to_number(re.sub(r"[^\d.\-]", "", str(cmp_info.get(key))))
-            if v and v > 0:
-                info["업종평균PER"] = v
-                break
-        for item in (cmp_info.get("stocks") or cmp_info.get("items") or []):
-            if isinstance(item, dict):
-                code = item.get("itemCode") or item.get("reutersCode")
-                if code and code != ticker:
-                    peer_codes.append(str(code))
-
-    if info["업종평균PER"] is None and peer_codes:
-        med, n_valid = industry_per_from_peers(peer_codes, debug=debug)
-        if med:
-            info["업종평균PER"] = med
-            info["업종비교군수"] = n_valid
+    # 업종명은 참고용으로만 남긴다.
+    # 예전에는 여기서 동일업종 비교군의 PER을 받아 기준으로 썼는데,
+    # 95종목 중 51개가 '비교군 PER이 4배 넘게 흩어짐'으로 기각됐다.
+    # 같은 업종으로 묶여도 기술과 주력 제품이 달라 비교가 성립하지 않았다.
+    # 비교군 조회를 없애면서 종목당 네이버 호출이 최대 7번에서 2번으로 줄었다.
 
     if info.get("업종명") is None:
         info["업종명"] = (data.get("industryCodeType")
@@ -780,8 +662,7 @@ def fetch_naver_current(ticker, debug=False):
                        or data.get("industryName"))
 
     if debug:
-        print(f"    [진단] 업종={info['업종명']} 비교군={len(peer_codes)}개 "
-              f"동종업계PER={info['업종평균PER']}")
+        print(f"    [진단] 업종={info['업종명']}")
     return info
 
 
@@ -799,7 +680,7 @@ def fetch_naver_basic_price(ticker):
 
 # ── 6) 펀더멘탈 지표 계산 ─────────────────────────────
 def compute_fundamentals(dart_history, naver_annual, current_per,
-                         current_price=None, industry_per=None):
+                         current_price=None):
     """연도별 지표를 만들고 5개 축으로 펀더멘탈 점수를 산출한다.
 
     지표별 출처와 방식:
@@ -877,11 +758,9 @@ def compute_fundamentals(dart_history, naver_annual, current_per,
             dividend = round(latest_dps / current_price * 100, 2)
     current["시가배당률"] = dividend
 
-    # ── 5개 축 점수화 ──
-    per_score, per_note = score_per(current_per, industry_per,
-                                    list(series["PER"].values()))
+    # ── 4개 축 점수화 (PER은 점수에 넣지 않는다) ──
+    per_info = summarize_per(current_per, list(series["PER"].values()))
     parts = {
-        "PER": per_score,
         "영업이익률": score_operating_margin(current["영업이익률"],
                                       percentiles["영업이익률"]),
         "부채비율": score_debt_ratio(current["부채비율"]),
@@ -895,8 +774,6 @@ def compute_fundamentals(dart_history, naver_annual, current_per,
             and current["부채비율"] > DEBT_RATIO_UNSCORABLE):
         주의.append(f"부채비율 {current['부채비율']:.0f}% — 금융업이면 정상, "
                   f"아니면 재무 위험. 점수에서 제외함")
-    if industry_per is None and len(series["PER"]) < MIN_VALID_PER_SAMPLES:
-        주의.append("PER 비교 기준 없음")
 
     profit_years = series["영업이익률"] or series["ROE"]
     return {
@@ -908,14 +785,12 @@ def compute_fundamentals(dart_history, naver_annual, current_per,
         "펀더멘탈점수": funda_score,
         "펀더멘탈원점수": funda_raw,
         "반영배점": covered_weight,
-        "PER근거": per_note,
-        "업종평균PER": industry_per,
+        "PER요약": per_info,
         "기준연도": max(profit_years) if profit_years else None,
         "이력연수": len(profit_years),
         "PER이력연수": len(series["PER"]),
         "부채이력연수": len(series["부채비율"]),
         "PER제외연도": dropped_per,
-        "PER판정불가사유": None if per_score is not None else per_note,
     }
 
 
@@ -1104,7 +979,7 @@ def main():
         current_per = naver_now["네이버PER"]
 
         funda = compute_fundamentals(dart_history, naver_annual, current_per,
-                                     current_price, naver_now.get("업종평균PER"))
+                                     current_price)
 
         if funda["이력연수"] < MIN_HISTORY_YEARS and funda["펀더멘탈점수"] is None:
             print(f"  이력 부족 (재무 {funda['이력연수']}년, 지표 확보 실패) → 판단 제외")
@@ -1137,8 +1012,7 @@ def main():
                         f"재료 {funda['반영배점']}/100만큼만 인정")
         print(f"  {label} | 종합 {total}점 | "
               f"펀더멘탈 {fmt(funda['펀더멘탈점수'])}점{cov_note}")
-        print(f"    PER {fmt(funda['현재']['PER'])} → {fmt(s['PER'])}점 "
-              f"[{funda['PER근거']}]")
+        print(f"    {funda['PER요약']['표시']}   ← 점수에는 반영하지 않음")
         margin_note = f"자기 {funda['이력연수']}년 백분위"
         if (s["영업이익률"] is not None
                 and funda["백분위"].get("영업이익률") is not None
@@ -1169,6 +1043,7 @@ def main():
             "수급신호": supply_signal["신호"] if supply_signal else None,
             "참고_네이버PER": naver_now["네이버PER"],
             "참고_추정PER": naver_now["추정PER"],
+            "시가총액": naver_now["시가총액"],
             "지분플래그": own.get("플래그") if own else None,
             "지분지표": own.get("지표") if own else None,
         })
@@ -1221,6 +1096,19 @@ def main():
                 "수급신호": bool(r["수급신호"]),
                 "지분플래그수": len(r.get("지분플래그") or []),
                 "판정일종가": r["현재가"],
+                # ── 자체 PER 시계열 축적 ──
+                # 네이버는 연도별 PER을 3년치만 준다. 그 3개로는 백분위가
+                # 0·33·67·100 네 등급밖에 안 나와 사실상 해상도가 없다.
+                # 그래서 오늘부터 매일의 PER을 직접 쌓는다.
+                # 1년이면 약 250개, 2년이면 500개 관측치가 되고,
+                # 그때부터는 '자기 과거 대비'를 제대로 잴 수 있다.
+                # 지나간 날은 만들 수 없으므로 하루라도 빨리 시작하는 것이 이득이다.
+                "현재PER": r["펀더멘탈"]["현재"].get("PER"),
+                "현재PER원본": r["펀더멘탈"]["현재"].get("PER원본"),
+                "PER과거중앙값": (r["펀더멘탈"].get("PER요약") or {}).get("과거중앙값"),
+                # 시가총액도 함께 쌓아둔다. 나중에 PER = 시가총액 ÷ 당기순이익 으로
+                # 다시 계산할 수 있어, 네이버가 PER 제공을 멈춰도 복구가 가능하다.
+                "시가총액": r.get("시가총액"),
             }, ensure_ascii=False) + "\n")
 
     # ── 텔레그램 리포트 ──
@@ -1240,8 +1128,8 @@ def main():
                 f"{r['라벨']}\n"
                 f"  · 펀더멘탈 {fmt(f_['펀더멘탈점수'])}점 "
                 f"(반영배점 {f_['반영배점']}/100)\n"
-                f"  · PER {fmt(f_['현재']['PER'])} · "
-                f"영업이익률 {fmt(f_['현재']['영업이익률'], '%')} · "
+                f"  · {f_['PER요약']['표시']}\n"
+                f"  · 영업이익률 {fmt(f_['현재']['영업이익률'], '%')} · "
                 f"부채비율 {fmt(f_['현재']['부채비율'], '%')}\n"
                 f"  · 매출성장 {fmt(f_['현재']['매출성장률'], '%')} · "
                 f"배당 {fmt(f_['현재']['시가배당률'], '%')}\n"
@@ -1279,13 +1167,14 @@ def main():
         for r in hidden[:5]:
             f_ = r["펀더멘탈"]
             line = (f"· {r['종목명']} — 펀더멘탈 {fmt(f_['펀더멘탈점수'])}점 "
-                    f"(PER {fmt(f_['현재']['PER'])})")
+                    f"· PER {fmt(f_['현재']['PER'])}")
             fr = (r.get("지분지표") or {}).get("실질유통비율")
             if fr is not None:
                 line += f" · 유통 {fr}%"
             lines.append(line)
 
-    lines.append(f"\n<i>※ 펀더멘탈 = PER25 + 영업이익률25 + 부채비율20 + 매출성장15 + 배당15. "
+    lines.append(f"\n<i>※ 펀더멘탈 = 영업이익률35 + 부채비율25 + 매출성장20 + 배당20. "
+                 f"PER은 점수에 넣지 않고 숫자만 보여줍니다 — 비교 기준이 마땅치 않아서입니다. "
                  f"부채비율 절대기준은 금융업에 맞지 않습니다.</i>")
 
     send_telegram("\n".join(lines))
@@ -1296,12 +1185,10 @@ def main():
     for axis in FUNDA_WEIGHTS:
         got[axis] = sum(1 for r in analyzed
                         if (r["펀더멘탈"].get("축점수") or {}).get(axis) is not None)
-    ind = sum(1 for r in analyzed if r["펀더멘탈"].get("업종평균PER"))
-    st = _INDUSTRY_STATS
-    print(f"동종업계 PER 기준 확보: {ind}/{len(analyzed)}종목 "
-          f"(나머지는 자기 과거 PER로 대체)")
-    print(f"  비교군 판정: 채택 {st['채택']} · "
-          f"분산 기각 {st['분산기각']} · 표본 부족 {st['표본부족']}")
+    per_ok = sum(1 for r in analyzed
+                 if (r["펀더멘탈"].get("PER요약") or {}).get("현재") is not None)
+    print(f"PER 표시 가능: {per_ok}/{len(analyzed)}종목 "
+          f"(점수에는 반영하지 않고 참고용으로만 보여줌)")
     print(f"축별 점수 산출: " +
           " · ".join(f"{k} {v}/{len(analyzed)}" for k, v in got.items()))
     if unmatched:
