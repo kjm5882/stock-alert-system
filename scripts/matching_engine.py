@@ -267,6 +267,29 @@ def summarize_per(current_per, past_pers):
     return summary
 
 
+# 영업이익률은 자기 과거 백분위로 재지만, 절대 수준이 나쁘면 상한을 씌운다.
+# 이유: 백분위만 쓰면 적자 기업이 '과거보다 덜 나쁘다'는 이유로 만점을 받는다.
+# (실제로 파두 영업이익률 -70.84%가 100점을 받았다)
+MARGIN_CAPS = [(0.0, 20), (3.0, 60)]   # (영업이익률 상한, 점수 상한)
+
+
+def score_operating_margin(margin, percentile):
+    """영업이익률 점수 = 자기 과거 백분위에 절대 수준 상한을 적용.
+
+    배점 50점으로 펀더멘탈의 절반을 차지한다.
+    '그 기업의 과거 경험 수준 대비 지금 어디인가'가 이 시스템의 판단 기준이기 때문.
+    """
+    if percentile is None:
+        return None
+    score = percentile
+    if margin is not None:
+        for limit, cap in MARGIN_CAPS:
+            if margin < limit:
+                score = min(score, cap)
+                break
+    return round(score, 1)
+
+
 def combine_funda_score(parts):
     """확보된 지표만으로 100점 만점 환산 + 재료가 적으면 점수를 중립쪽으로 당긴다.
 
