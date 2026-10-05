@@ -355,16 +355,27 @@ def collect_narrative_raw():
                 continue
 
             entry = per_name.setdefault(name, {
-                "언급건수": 0, "출처": set(), "긍정": 0, "부정": 0, "중립": 0,
+                "언급건수": 0, "판정건수": 0, "출처": set(),
+                "긍정": 0, "부정": 0, "중립": 0,
                 "확신도높음": 0, "근거": [], "언급된이름": set(),
             })
             entry["언급건수"] += 1
             entry["출처"].add(rec.get("source_name", "?"))
             entry["언급된이름"].add(name)
-            tone = rec.get("논조", "중립")
-            entry[tone if tone in ("긍정", "부정", "중립") else "중립"] += 1
-            if rec.get("확신도") == "높음":
-                entry["확신도높음"] += 1
+
+            # 논조·확신도를 판정할 수 없는 출처가 있다. 유튜브 RSS가 그렇다.
+            # 제목과 설명란만 들어오는데, 그 글은 클릭을 유도하려고 쓴 것이라
+            # 그대로 판정하면 거의 전부 '긍정·확신 높음'으로 들어온다.
+            # 그렇다고 '중립'으로 채우면 비율의 분모만 키워서 점수를 깎는다.
+            # (블로그 1건 긍정+유튜브 1건 중립 = 50점 → 48점으로 오히려 하락)
+            # 그래서 판정 불가인 출처는 출처 수에만 기여하고 비율에서는 빠진다.
+            judged = rec.get("논조판정", True)   # 옛 기록은 전부 판정된 것으로 본다
+            if judged:
+                entry["판정건수"] += 1
+                tone = rec.get("논조", "중립")
+                entry[tone if tone in ("긍정", "부정", "중립") else "중립"] += 1
+                if rec.get("확신도") == "높음":
+                    entry["확신도높음"] += 1
             reason = rec.get("언급이유")
             if reason and len(entry["근거"]) < 5:
                 entry["근거"].append(f"[{rec.get('source_name')}] {reason}")
@@ -399,10 +410,14 @@ def score_narrative(e):
     '내러티브가 형성됐다'고 보기 어렵고, 여러 사람이 동시에 얘기하는 것이 신호이기 때문.
     """
     n = e["언급건수"]
+    # 비율의 분모는 '논조를 판정할 수 있었던 건수'다. 전체 언급건수가 아니다.
+    # 유튜브처럼 판정 불가인 출처가 분모에 들어가면 비율이 희석돼
+    # 출처를 늘렸는데 점수는 떨어지는 역효과가 난다.
+    judged = e.get("판정건수", n)
     sources = len(e["출처"])
     source_score = min(60, 10 + (sources - 1) * 18)
-    positive_score = (e["긍정"] / n) * 25 if n else 0
-    confidence_score = (e["확신도높음"] / n) * 15 if n else 0
+    positive_score = (e["긍정"] / judged) * 25 if judged else 0
+    confidence_score = (e["확신도높음"] / judged) * 15 if judged else 0
 
     return {
         "내러티브점수": round(source_score + positive_score + confidence_score, 1),
