@@ -52,6 +52,16 @@ import requests
 LOOKBACK_DAYS_FOR_MENTIONS = 14     # 피드에서 며칠치 언급을 볼지
 CONSECUTIVE_DAYS_THRESHOLD = 3      # 연속 순매수 며칠부터 신호로 볼지
 SPIKE_MULTIPLIER_THRESHOLD = 3.0    # 평소 대비 몇 배부터 급증으로 볼지
+
+# ── 일일 수급 알림 스위치 ───────────────────────────
+# 기본 꺼짐. 138건을 뜯어보니 56%가 급증배수 1 미만이었다 —
+# "연속 순매수"라고 알림이 갔지만 그날 매수는 자기 평균보다 작았다.
+# 하위 10%는 1.8억원이다. 그 규모에서는 시장구분(KRX/NXT)만 달라져도
+# 부호가 뒤집힌다. 한양이엔지에서 실제로 그 일이 있었다.
+#
+# 🔴 끄는 것은 '전송'뿐이다. 아래 신호 적재는 그대로 돌아야 한다.
+#    주간 리포트가 그 기록을 읽어 '지난주 수급'을 만든다.
+DAILY_TELEGRAM = os.environ.get("DAILY_TELEGRAM", "off").lower() in ("on", "1", "true", "yes")
 SEEN_KEEP_DAYS = 7                  # seen 기록을 며칠치만 남길지
 
 KST = timezone(timedelta(hours=9))  # GitHub Actions는 UTC로 도니 명시적으로 변환한다
@@ -234,7 +244,12 @@ def fetch_trend(ticker):
 
 def analyze_supply_demand(trend_data):
     """수급 데이터로 연속순매수 / 급증 패턴을 분석.
-    trend_data는 최신일이 첫 번째(내림차순)로 들어온다."""
+    trend_data는 최신일이 첫 번째(내림차순)로 들어온다.
+
+    ※ 이 데이터는 네이버가 주는 KRX 단일시장 기준이다.
+      HTS를 KRX+NXT 통합으로 보고 있으면 부호까지 달라질 수 있다.
+      실제로 한양이엔지(045100)에서 그 일이 있었다. 그래서
+      일별 원본을 통째로 남겨, 다음에 어긋날 때 하루씩 대조한다."""
     result = {}
 
     investors = {
@@ -267,10 +282,26 @@ def analyze_supply_demand(trend_data):
             "오늘순매수수량": today_value,
             "오늘순매수금액_추정": today_value * close_price,
             "급증배수": round(spike_ratio, 1),
+            # 창 길이와 같으면 '연속일수'가 천장에 닿은 것이다.
+            # 실제로는 더 길 수 있어서 '최소 N일'로 읽어야 한다.
+            "창길이": len(values),
+            "연속상한도달": consecutive >= len(values),
         }
 
     result["_기준일"] = trend_data[0].get("bizdate")
     result["_종가"] = close_price
+    result["_시장구분"] = "KRX"       # 네이버가 주는 범위. NXT는 포함되지 않는다.
+    # 사후 검증용 일별 원본. 집계값만 남기면 HTS와 어긋날 때
+    # 어느 날이 다른지 특정할 수가 없다.
+    result["_일별"] = [
+        {
+            "일자": d.get("bizdate"),
+            "종가": parse_number(d.get("closePrice")),
+            "외국인": parse_number(d.get("foreignerPureBuyQuant")),
+            "기관": parse_number(d.get("organPureBuyQuant")),
+        }
+        for d in trend_data
+    ]
     return result
 
 
@@ -365,7 +396,13 @@ def main():
         for label in ["외국인", "기관"]:
             stats = analysis[label]
             if stats["연속순매수일수"] >= CONSECUTIVE_DAYS_THRESHOLD:
-                reasons.append(f"{label} {stats['연속순매수일수']}일 연속 순매수")
+                # 창 길이에 닿았으면 '10일 연속'이 아니라 '최소 10일'이다.
+                prefix = "최소 " if stats["연속상한도달"] else ""
+                reasons.append(
+                    f"{label} {prefix}{stats['연속순매수일수']}일 연속 순매수 "
+                    f"(최근일 {format_amount(stats['오늘순매수금액_추정'])}원"
+                    f"{', 평소의 ' + str(stats['급증배수']) + '배' if stats['급증배수'] < 1 else ''})"
+                )
             if stats["급증배수"] >= SPIKE_MULTIPLIER_THRESHOLD:
                 reasons.append(
                     f"{label} 순매수 평소 대비 {stats['급증배수']}배 급증 "
@@ -378,8 +415,10 @@ def main():
                 "종목명": name,
                 "티커": ticker,
                 "기준일": analysis["_기준일"],
+                "시장구분": analysis["_시장구분"],
                 "신호": reasons,
                 "상세": {k: v for k, v in analysis.items() if not k.startswith("_")},
+                "일별원본": analysis["_일별"],
             }
             append_signal(record)
             new_signals.append(record)
@@ -403,8 +442,19 @@ def main():
             lines.append(f"🔹 <b>{r['종목명']}</b> ({r['티커']})")
             for reason in r["신호"]:
                 lines.append(f"   └ {reason}")
-        send_telegram("\n".join(lines))
-        print(f"\n총 {len(new_signals)}건의 수급 신호 → 텔레그램 전송 완료")
+        lines.append(
+            "\n<i>※ 네이버 제공 <b>KRX 단일시장</b> 기준입니다. "
+            "HTS를 KRX+NXT 통합으로 보시면 수치가 다르고, "
+            "순매수 규모가 작은 날은 <b>부호까지 뒤바뀔 수 있습니다.</b></i>"
+        )
+        if DAILY_TELEGRAM:
+            send_telegram("\n".join(lines))
+            print(f"\n총 {len(new_signals)}건의 수급 신호 → 텔레그램 전송 완료")
+        else:
+            print(f"\n총 {len(new_signals)}건의 수급 신호를 기록했습니다 "
+                  f"(일일 알림 꺼짐 — 주간 리포트로 봅니다. 켜려면 DAILY_TELEGRAM=on)")
+            for r in new_signals:
+                print(f"  · {r['종목명']}({r['티커']}) {' / '.join(r['신호'])}")
     else:
         print(f"\n조회 성공 {fetch_success}개 종목, 특이 수급 신호는 없습니다.")
 

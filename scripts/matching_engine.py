@@ -105,6 +105,24 @@ DART_API_KEY = os.environ.get("DART_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+# ── 일일 종목 알림 스위치 ───────────────────────────
+# 기본 꺼짐. 이유는 신호의 성질이다 — 영업이익률·PER·부채비율·지분은
+# 분기나 연 단위로 변하는데 알림만 하루 주기였다. 어제와 오늘이 거의
+# 같은 내용을 99종목씩 보내니 읽을 이유가 없어진다.
+# 대신 주 1회 리포트(weekly_report.py)로 본다.
+#
+# 🔴 끄는 것은 '전송'뿐이다. 아래 history 적재는 그대로 매일 돌아야 한다.
+#    하루 기록이 빠지면 그날 선정 종목의 이후 수익률을 영원히 못 센다.
+#    engine_eval 의 표본이 거기서 나온다.
+#
+# 다시 켤 조건(미리 정해둔다 — 나중에 감으로 판단하지 않기 위해):
+#    engine_eval 이 골든존의 코스피 대비 초과수익을 종목 30개 이상에서
+#    보여줄 때. 그때 DAILY_TELEGRAM=on 으로 켠다.
+DAILY_TELEGRAM = os.environ.get("DAILY_TELEGRAM", "off").lower() in ("on", "1", "true", "yes")
+
+# 고장 경고는 이 스위치와 무관하게 항상 보낸다.
+# 안 오면 멈춘 줄 모르고 지나가기 때문이다.
+
 NAVER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
@@ -1218,7 +1236,18 @@ def main():
                  f"PER은 점수에 넣지 않고 숫자만 보여줍니다 — 비교 기준이 마땅치 않아서입니다. "
                  f"부채비율 절대기준은 금융업에 맞지 않습니다.</i>")
 
-    send_telegram("\n".join(lines))
+    report_text = "\n".join(lines)
+    if DAILY_TELEGRAM:
+        send_telegram(report_text)
+        print("\n[텔레그램] 일일 리포트 전송함 (DAILY_TELEGRAM=on)")
+    else:
+        # 보내지는 않되 로그에는 남긴다. 실행 로그만 보고도
+        # 그날 무엇이 뽑혔는지 확인할 수 있어야 한다.
+        print("\n[텔레그램] 일일 종목 알림은 꺼져 있습니다 "
+              "(주간 리포트로 봅니다. 켜려면 DAILY_TELEGRAM=on)")
+        print("─" * 50)
+        print(re.sub(r"<[^>]+>", "", report_text))
+        print("─" * 50)
 
     print(f"\n{'='*50}")
     print(f"분석 완료: {len(analyzed)}종목 / 골든존 {len(golden)}개")
