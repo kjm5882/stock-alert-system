@@ -171,14 +171,19 @@ def build_payload() -> dict:
                               "변화": round(diff, 1)})
     moves.sort(key=lambda m: -abs(m["변화"]))
 
-    # PER 자기역사 (있으면)
-    per_pos = {}
+    # PER 자기역사 (있으면). 오늘 시가총액으로 현재값을 다시 계산한다 —
+    # 적재 파일이 몇 주 묵어도 '지금'만은 오늘 것이 되게.
+    per_pos, vh_stale = {}, None
     try:
         sys.path.insert(0, HERE)
         from valuation_history import ValuationHistory      # noqa: PLC0415
         vh = ValuationHistory.load()
-        for tk in {r.get("티커") for r in rows}:
-            p = vh.position(tk, "per_fy0")
+        if vh.tickers:
+            days, fresh = vh.staleness()
+            vh_stale = {"경과일": days, "신선": fresh, "종목수": len(vh.tickers)}
+        for r in rows:
+            tk = r.get("티커")
+            p = vh.live_position(tk, r.get("시가총액")) or vh.position(tk)
             if p and not p.get("표본부족"):
                 per_pos[tk] = p
     except Exception:                                     # noqa: BLE001
@@ -197,6 +202,9 @@ def build_payload() -> dict:
             "PER표시": (f.get("PER요약") or {}).get("표시") or "",
             "PER백분위": vp.get("백분위") if vp else None,
             "PER표본": vp.get("표본") if vp else None,
+            # 🔴 네이버 PER(주가÷EPS)과 이 값(시총÷지배순이익·TTM)은 정의가 다르다.
+            #    백분위를 네이버 숫자 옆에 붙이면 안 된다. 제 값과 함께 따로 싣는다.
+            "PERTTM": vp.get("현재") if vp else None,
             "영업이익률": c.get("영업이익률"), "부채비율": c.get("부채비율"),
             "매출성장률": c.get("매출성장률"), "배당률": c.get("시가배당률"),
             "유통비율": z.get("실질유통비율"),
@@ -236,13 +244,24 @@ def build_payload() -> dict:
         "이탈유니버스": len([t for t in prv_h if t not in cur_h]) if prv_h else None,
         "골든존진입": enter, "골든존이탈": exited, "점수급변": moves[:10],
         "골든존": golden, "숨은우량": hidden[:MAX_HIDDEN], "숨은우량전체": len(hidden),
-        "적재일수": len(days), "레거시기록": legacy,
+        "적재일수": len(days), "레거시기록": legacy, "밸류적재": vh_stale,
     }
 
 
 # ── HTML ────────────────────────────────────────────
 def e(s) -> str:
     return html.escape(str(s if s is not None else ""))
+
+
+def pctile_text(v) -> str:
+    """백분위를 '상위 N%' / '하위 N%' 로 읽히게. 50 이상이면 비싼 쪽이다."""
+    if not isinstance(v, (int, float)):
+        return "—"
+    if v >= 80:
+        return f"상위 {round(100 - v, 1)}% · 비싼 구간"
+    if v <= 20:
+        return f"하위 {round(v, 1)}% · 싼 구간"
+    return (f"상위 {round(100 - v, 1)}%" if v >= 50 else f"하위 {round(v, 1)}%")
 
 
 def render_html(p: dict) -> str:
@@ -280,10 +299,12 @@ def render_html(p: dict) -> str:
             return '<p class="empty">해당 종목이 없습니다.</p>'
         out = []
         for d in items:
-            per = e(d["PER표시"]) or "—"
+            per = f'<p class="per">{e(d["PER표시"]) or "—"}</p>'
             if d.get("PER백분위") is not None:
-                per += (f' <span class="pct">자기역사 {d["PER백분위"]}%'
-                        f'<span class="dimx"> · {d["PER표본"]}주</span></span>')
+                per += (f'<p class="per per-hist">PER(TTM) {d["PERTTM"]} — '
+                        f'<span class="pct">자기역사 {d["PER표본"]}주 중 '
+                        f'{pctile_text(d["PER백분위"])}</span></p>')
+
             extra = []
             if d["수급"]:
                 extra.append(f'<span class="tag tag-sd">{e(d["수급"])}</span>')
@@ -327,7 +348,7 @@ def render_html(p: dict) -> str:
     <div><dt>유통물량</dt><dd>{num(d["유통비율"], "%")}</dd></div>
     <div><dt>시총</dt><dd>{won(d["시총"])}</dd></div>
   </dl>
-  <p class="per">{per}</p>
+  {per}
   {said}
   {'<p class="tags">' + "".join(extra) + '</p>' if extra else ''}
 </article>""")
@@ -339,9 +360,15 @@ def render_html(p: dict) -> str:
         f'<div class="lab"><b>{v}</b><span>{e(k.split(" (")[0])}</span></div>'
         for k, v in sorted((p.get("라벨분포") or {}).items(), key=lambda x: -x[1]))
 
-    per_line = (f'PER 자기역사 백분위 {p["PER백분위가능"]}/{p["총종목"]}종목'
-                if p.get("PER백분위가능") else
-                'PER 자기역사는 아직 적재 전입니다 — 네이버 3년치 표시만 나갑니다')
+    vs = p.get("밸류적재") or {}
+    if p.get("PER백분위가능"):
+        per_line = (f'PER 자기역사 백분위 {p["PER백분위가능"]}/{p["총종목"]}종목 '
+                    f'(TTM 기준 · 현재값은 오늘 시가총액으로 재계산)')
+        if vs and not vs.get("신선"):
+            per_line += (f' <b>— 적재가 {vs.get("경과일")}일 묵었습니다. '
+                         f'새로 들어온 종목은 자기역사가 없습니다.</b>')
+    else:
+        per_line = 'PER 자기역사는 아직 적재 전입니다 — 네이버 표시만 나갑니다'
 
     uni = ""
     if p.get("신규유니버스") is not None:
@@ -433,6 +460,8 @@ td.dim {{ color:var(--ink-3); }}
   font-variant-numeric:tabular-nums; }}
 .per {{ margin:0; font-size:.78rem; color:var(--ink-2); background:var(--amber-bg);
   border-radius:6px; padding:6px 9px; }}
+.per-hist {{ margin-top:5px; background:transparent; border:1px solid var(--line);
+  padding:6px 9px; font-family:var(--mono); font-size:.76rem; }}
 .pct {{ color:var(--amber); font-weight:600; }}
 .dimx {{ color:var(--ink-3); font-weight:400; }}
 .said {{ margin-top:10px; border-left:2px solid var(--line); padding-left:10px; }}

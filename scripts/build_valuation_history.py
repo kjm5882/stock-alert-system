@@ -34,7 +34,12 @@ KST = timezone(timedelta(hours=9))
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_PATH = os.path.join(HERE, "..", "data", "valuation_history.json")
 
-COLUMNS = ["asof", "per_fy0", "per_ttm", "pbr"]   # 적재할 열. 순서 고정.
+# 적재할 열. 순서 고정.
+# cap_krw 를 같이 담는 이유: PER = 시가총액 ÷ 지배주주순이익 인데,
+# 분모는 분기에 한 번만 바뀌고 분자(시총)는 엔진이 매일 받는다.
+# 마지막 관측의 cap 과 per 로 분모를 역산해 두면, 적재가 몇 달 묵어도
+# 현재 PER 을 엔진이 매일 제 손으로 계산할 수 있다.
+COLUMNS = ["asof", "per_fy0", "per_ttm", "pbr", "cap_krw"]
 
 DEFINITION = ("PER = 보통주 시총 ÷ 지배주주순이익 (PIT, 주간) · "
               "PBR = 보통주 시총 ÷ 지배자본. "
@@ -71,7 +76,12 @@ def extract(obj: dict) -> tuple[str, dict] | None:
         row = [str(r["asof"])]
         for col in COLUMNS[1:]:
             v = r.get(col)
-            row.append(round(float(v), 4) if isinstance(v, (int, float)) else None)
+            if not isinstance(v, (int, float)):
+                row.append(None)
+            elif col == "cap_krw":
+                row.append(int(v))          # 시총은 원 단위 정수 그대로
+            else:
+                row.append(round(float(v), 4))
         rows.append(row)
     if not rows:
         return None

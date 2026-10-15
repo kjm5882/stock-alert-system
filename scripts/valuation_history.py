@@ -43,6 +43,12 @@ DEFAULT_PATH = os.path.join(HERE, "..", "data", "valuation_history.json")
 # 표본이 이보다 적으면 백분위를 내지 않는다.
 # 주간 관측이므로 104 = 약 2년. 3년 표본(158개)에서도 기준선이
 # 28% 흔들렸으니, 2년 미만은 '판단보류'가 정직하다.
+# 기본 지표는 TTM(최근 4분기 지배순이익) 이다.
+# FY0 은 '직전 확정 사업연도' 기준이라 실적이 급변하는 구간에서 딴 얘기를 한다 —
+# SK하이닉스가 FY0 으로는 백분위 52%(중간권)인데 TTM 으로는 21.7%(싼 편)였다.
+# 매칭 엔진이 보여주는 네이버 PER(6.5)과도 TTM(7.24)이 같은 세계의 숫자다.
+DEFAULT_KEY = "per_ttm"
+
 MIN_SAMPLES = 104
 
 # 이 날짜보다 오래된 적재분은 신선하지 않다고 본다(일).
@@ -101,7 +107,7 @@ class ValuationHistory:
         return days, days <= STALE_AFTER_DAYS
 
     # ── 핵심 ────────────────────────────────────────────
-    def series(self, ticker: str, key: str = "per_fy0") -> list[tuple[str, float]]:
+    def series(self, ticker: str, key: str = DEFAULT_KEY) -> list[tuple[str, float]]:
         """(날짜, 값) 오름차순. 이상치와 결측은 버린다."""
         rec = self._by_ticker.get(str(ticker))
         if not rec:
@@ -124,7 +130,7 @@ class ValuationHistory:
         out.sort(key=lambda t: t[0])
         return out
 
-    def position(self, ticker: str, key: str = "per_fy0") -> dict | None:
+    def position(self, ticker: str, key: str = DEFAULT_KEY) -> dict | None:
         """현재값이 자기 과거 분포의 몇 번째 백분위인가.
 
         백분위는 '현재값보다 낮았던 관측의 비율'이다.
@@ -165,9 +171,57 @@ class ValuationHistory:
             "표본부족": False,
         }
 
-    def describe(self, ticker: str, key: str = "per_fy0") -> str:
+    # ── 적재가 묵어도 현재값을 살리는 길 ────────────────
+    def implied_earnings(self, ticker: str) -> float | None:
+        """마지막 관측에서 지배주주순이익을 역산한다.
+
+        PER = 시가총액 ÷ 지배순이익 이므로 순이익 = 시총 ÷ PER.
+        분모는 분기에 한 번만 바뀌니, 적재가 몇 주 묵어도 이 값은 유효하다.
+        """
+        rec = self._by_ticker.get(str(ticker))
+        if not rec:
+            return None
+        cols = rec.get("열") or []
+        if "cap_krw" not in cols or DEFAULT_KEY not in cols:
+            return None          # cap 없이 적재된 옛 파일
+        ic, ip = cols.index("cap_krw"), cols.index(DEFAULT_KEY)
+        for row in reversed(rec.get("series") or []):
+            if len(row) <= max(ic, ip):
+                continue
+            cap, per = row[ic], row[ip]
+            if isinstance(cap, (int, float)) and isinstance(per, (int, float)) and per > 0:
+                return cap / per
+        return None
+
+    def live_position(self, ticker: str, market_cap) -> dict | None:
+        """오늘 시가총액으로 계산한 PER 이 자기 과거 분포의 어디인가.
+
+        엔진이 매일 받는 시가총액을 넣으면, 적재 파일이 묵었더라도
+        현재값만은 오늘 것이 된다. 과거 분포는 어차피 변하지 않는다.
+        네이버 PER(주가÷EPS)을 섞지 않으므로 정의도 어긋나지 않는다.
+        """
+        if not isinstance(market_cap, (int, float)) or market_cap <= 0:
+            return None
+        earn = self.implied_earnings(ticker)
+        if not earn or earn <= 0:
+            return None           # 적자이거나 역산 불가
+        base = self.position(ticker, DEFAULT_KEY)
+        if not base or base.get("표본부족"):
+            return base
+
+        s = self.series(ticker, DEFAULT_KEY)
+        vals = sorted(v for _, v in s)
+        cur = market_cap / earn
+        pct = bisect_left(vals, cur) / len(vals) * 100
+
+        out = dict(base)
+        out.update({"현재": round(cur, 2), "백분위": round(pct, 1),
+                    "기준일": "오늘(시총 기준)", "적재현재": base["현재"]})
+        return out
+
+    def describe(self, ticker: str, key: str = DEFAULT_KEY) -> str:
         """텔레그램에 그대로 넣을 한 줄. 점수화하지 않고 위치만 말한다."""
-        label = {"per_fy0": "PER", "per_ttm": "PER(TTM)", "pbr": "PBR"}.get(key, key)
+        label = {"per_fy0": "PER(FY0)", "per_ttm": "PER(TTM)", "pbr": "PBR"}.get(key, key)
         p = self.position(ticker, key)
         if p is None:
             return f"{label} 자기역사 없음"
@@ -208,7 +262,7 @@ def main():
 
     enough = short = 0
     for t in vh.tickers:
-        p = vh.position(t, "per_fy0")
+        p = vh.position(t, DEFAULT_KEY)
         name = (vh._by_ticker[t].get("종목명") or t)
         if p and not p["표본부족"]:
             enough += 1
