@@ -179,8 +179,11 @@ def build_payload() -> dict:
         from valuation_history import ValuationHistory      # noqa: PLC0415
         vh = ValuationHistory.load()
         if vh.tickers:
-            days, fresh = vh.staleness()
-            vh_stale = {"경과일": days, "신선": fresh, "종목수": len(vh.tickers)}
+            # 🔴 변수명 주의: 바깥의 days 는 '적재된 날짜 목록'이다.
+            #    여기서 days 를 다시 쓰면 그걸 정수로 덮어써 버린다. 실제로 그랬다.
+            stale_days, stale_fresh = vh.staleness()
+            vh_stale = {"경과일": stale_days, "신선": stale_fresh,
+                        "종목수": len(vh.tickers)}
         for r in rows:
             tk = r.get("티커")
             p = vh.live_position(tk, r.get("시가총액")) or vh.position(tk)
