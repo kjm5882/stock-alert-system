@@ -609,11 +609,36 @@ td.dim {{ color:var(--ink-3); }}
 </div>"""
 
 
+STANDALONE_HEAD = """<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{color-scheme:light}*,*::before,*::after{box-sizing:border-box}
+body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+"""
+STANDALONE_TAIL = "\n</body>\n</html>\n"
+
+
+def wrap_standalone(body: str) -> str:
+    """혼자 열어도 제대로 보이게 완전한 HTML 문서로 감싼다.
+
+    doctype 이 없으면 브라우저가 호환(quirks) 모드로 그린다 —
+    box-sizing 기본값이 달라져 여백과 표 폭이 어긋난다.
+    아티팩트로 올릴 때는 바깥에서 껍데기를 씌워주므로 --embed 로 끈다.
+    """
+    head_end = body.index("<style>") if "<style>" in body else 0
+    return (STANDALONE_HEAD + body[:head_end] + "</head>\n<body>\n"
+            + body[head_end:] + STANDALONE_TAIL)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload", help="미리 만든 페이로드 JSON에서 렌더")
     ap.add_argument("--dump-payload", help="페이로드만 이 경로에 저장")
     ap.add_argument("--out", default=OUT_HTML)
+    ap.add_argument("--embed", action="store_true",
+                    help="doctype·html·head 를 빼고 본문만 — 아티팩트 발행용")
     args = ap.parse_args()
 
     if args.payload:
@@ -627,9 +652,13 @@ def main():
             json.dump(payload, f, ensure_ascii=False, indent=1)
         print(f"페이로드 저장: {args.dump_payload}")
 
+    html_body = render_html(payload)
+    if not args.embed:
+        html_body = wrap_standalone(html_body)
+
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
-        f.write(render_html(payload))
+        f.write(html_body)
 
     size = os.path.getsize(args.out) / 1024
     print(f"주간 리포트 생성: {args.out} ({size:,.0f} KB)")
