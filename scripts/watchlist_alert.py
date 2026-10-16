@@ -55,33 +55,49 @@ SEEN_KEEP_DAYS = 90        # 본 공시 기록 보관 기간
 MAX_ALERTS_PER_RUN = 25    # 한 번에 보낼 상한
 REQUEST_PAUSE = 0.15       # DART 호출 간격
 
-# ── 중요 공시 (이것만 알린다) ────────────────────────
-# 키워드는 report_nm(공시명)에 대한 부분일치다.
-# 순서가 곧 우선순위 — 먼저 맞는 분류로 잡는다.
-IMPORTANT = [
+# ── 분류 ────────────────────────────────────────────
+# 🔴 설계: 화이트리스트가 아니라 **블랙리스트**다.
+#    처음엔 '중요한 것만 알린다'로 짰는데, 알테오젠의 「증권신고서(합병)」를
+#    놓쳤다. 키워드가 '합병결정'이어서 안 걸린 것이다.
+#    보유종목은 7개뿐이고 하루 공시가 몇 건 안 된다. 놓치는 비용이
+#    한 건 더 오는 비용보다 훨씬 크다. 그래서 **잡음으로 지정한 것만 버리고
+#    나머지는 전부 알린다.**
+#
+# 아래 목록은 '버리기 위한 것'이 아니라 **아이콘과 묶음을 붙이기 위한 것**이다.
+# 여기 안 걸리면 버리지 않고 '기타'로 알린다.
+CATEGORY = [
     ("수주",       ["단일판매", "공급계약"]),
     ("실적",       ["영업(잠정)실적", "잠정실적", "매출액또는손익구조", "손익구조"]),
-    ("희석",       ["유상증자결정", "전환사채권발행결정", "신주인수권부사채권발행결정",
-                   "교환사채권발행결정", "감자결정", "무상증자결정"]),
-    ("지배구조",   ["최대주주변경", "대량보유상황보고서", "경영권", "공개매수",
-                   "의결권대리행사권유"]),
-    ("내부자",     ["임원ㆍ주요주주특정증권등소유상황보고서",
-                   "임원·주요주주특정증권등소유상황보고서"]),
-    ("주주환원",   ["자기주식취득", "자기주식처분", "자기주식소각", "현금ㆍ현물배당",
-                   "현금·현물배당", "신탁계약"]),
-    ("구조변경",   ["합병결정", "분할결정", "영업양수", "영업양도",
-                   "주식교환", "타법인주식및출자증권"]),
+    ("구조변경",   ["합병", "분할", "영업양수", "영업양도", "주식교환",
+                   "타법인주식및출자증권", "자산양수도"]),   # 합병이 증권신고서보다 먼저 잡히게
+    ("희석",       ["유상증자", "전환사채", "신주인수권부사채", "교환사채",
+                   "감자", "무상증자", "증권신고서", "증권발행", "전환청구권",
+                   "신주인수권행사", "주식매수선택권"]),
+    ("지배구조",   ["최대주주", "대량보유", "경영권", "공개매수",
+                   "의결권대리행사", "주식양수도", "주주총회"]),
+    ("내부자",     ["임원ㆍ주요주주", "임원·주요주주", "특정증권등소유"]),
+    ("주주환원",   ["자기주식", "자사주", "현금ㆍ현물배당", "현금·현물배당",
+                   "신탁계약", "배당"]),
+    ("연구개발",   ["임상시험", "기술이전", "라이선스", "특허권", "품목허가",
+                   "신약", "국책과제", "투자판단관련주요경영사항"]),
     ("사고",       ["소송", "횡령", "배임", "파산", "회생절차", "감사의견",
-                   "거래정지", "관리종목", "상장폐지", "불성실공시"]),
+                   "거래정지", "관리종목", "상장폐지", "불성실공시", "벌금",
+                   "제재", "조사"]),
 ]
 
-# 정기보고서는 기본으로 끈다 — src/watchlist_monitor.py 가 이미 알린다.
-# 그 워크플로우를 끄실 거면 watchlist.json 에서 "정기보고서알림": true 로.
+# 정기보고서는 watchlist.json 의 "정기보고서알림" 으로 켜고 끈다.
 PERIODIC = ["사업보고서", "반기보고서", "분기보고서"]
 
-# 제목에 이게 들어가면 중요 유형이라도 버린다.
-NOISE = ["기업설명회", "주주명부폐쇄", "결산실적공시예고", "안내공시",
-         "조회공시요구", "풍문또는보도"]
+# 🔴 이것만 버린다. 늘릴 때는 '정말 아무 정보가 없는가'를 따져보고 넣을 것.
+NOISE = [
+    "기업설명회",          # IR 개최 안내 — 일정일 뿐
+    "주주명부폐쇄",        # 기준일 설정
+    "결산실적공시예고",    # 언제 발표하겠다는 예고
+    "조회공시요구",        # 거래소가 물어본 것(답변은 '풍문또는보도'로 따로 온다)
+    "기타경영사항(자율공시)",  # 대부분 내용이 비어 있다
+    "[첨부추가]",          # 본문 변경 없이 첨부만
+    "[첨부정정]",
+]
 
 
 # ── 유틸 ────────────────────────────────────────────
@@ -217,16 +233,22 @@ def fetch_filings(corp_code: str, bgn: str, end: str) -> list[dict]:
 
 
 def classify(report_nm: str, allow_periodic: bool) -> str | None:
-    """공시명을 보고 분류를 돌려준다. 중요하지 않으면 None."""
+    """공시명을 보고 분류를 돌려준다. 버릴 것만 None.
+
+    화이트리스트가 아니다 — 잡음으로 지정한 것만 버리고 나머지는 전부 알린다.
+    분류에 안 걸리면 '기타'로 알린다. 버리지 않는다.
+    """
     nm = (report_nm or "").replace(" ", "")
+    if not nm:
+        return None
     if any(bad.replace(" ", "") in nm for bad in NOISE):
         return None
-    for label, keys in IMPORTANT:
+    if any(k in nm for k in PERIODIC):
+        return "정기보고서" if allow_periodic else None
+    for label, keys in CATEGORY:
         if any(k.replace(" ", "") in nm for k in keys):
             return label
-    if allow_periodic and any(k in nm for k in PERIODIC):
-        return "정기보고서"
-    return None
+    return "기타"
 
 
 # ── 중복 정리 ────────────────────────────────────────
@@ -269,7 +291,7 @@ def send_telegram(message: str):
 
 ICON = {"수주": "📄", "실적": "📊", "희석": "💧", "지배구조": "👤",
         "내부자": "🧾", "주주환원": "💰", "구조변경": "🔀",
-        "사고": "⚠️", "정기보고서": "📘"}
+        "연구개발": "🔬", "사고": "⚠️", "정기보고서": "📘", "기타": "•"}
 
 
 def build_message(found: list[dict], total: int) -> str:
@@ -322,6 +344,9 @@ def main():
     before = len(seen)
 
     found, checked, missing = [], 0, []
+    total_seen_in_window = 0   # 창 안의 공시 전체(이미 본 것 포함)
+    fetched_all = {}      # 접수번호 → 날짜. 분류와 무관하게 조회된 전부.
+    dropped = 0           # 잡음으로 버린 건수
     for st in watchlist:
         corp = corp_map.get(st["티커"])
         if not corp:
@@ -330,10 +355,15 @@ def main():
         checked += 1
         for row in fetch_filings(corp, bgn, end):
             rcept = str(row.get("rcept_no") or "").strip()
-            if not rcept or rcept in seen:
+            if not rcept:
                 continue
+            total_seen_in_window += 1
+            if rcept in seen:
+                continue
+            fetched_all[rcept] = str(row.get("rcept_dt") or "").strip() or end
             label = classify(row.get("report_nm"), allow_periodic)
             if not label:
+                dropped += 1
                 continue
             found.append({
                 "종목명": st["종목명"] or str(row.get("corp_name") or ""),
@@ -360,17 +390,22 @@ def main():
         log(f"\n신규 중요 공시 {len(uniq)}건 → 텔레그램 전송")
         for it in uniq:
             log(f"  [{it['분류']}] {it['종목명']}({it['티커']}) {it['공시명']}")
+    elif total_seen_in_window == 0:
+        log("\n조회 구간에 공시 자체가 없습니다 (DART에 올라온 게 없음)")
+    elif dropped:
+        log(f"\n알릴 공시 없음 — 신규 {len(fetched_all)}건 전부 잡음으로 걸러짐")
     else:
-        log("\n신규 중요 공시 없음")
+        log("\n알릴 공시 없음 — 신규 공시가 모두 이전에 본 것입니다")
 
-    # 본 것은 분류와 무관하게 전부 기록한다 —
-    # 중요하지 않다고 버리면 다음 실행에서 또 들여다보게 된다.
-    for it in found:
-        seen[it["접수번호"]] = it["날짜"] or end
+    # 조회된 공시는 분류와 무관하게 전부 기록한다.
+    # 잡음이라고 안 적으면 다음 실행에서 또 들여다보게 된다.
+    # (예전엔 found 만 적어서 주석과 코드가 어긋나 있었다.)
+    seen.update(fetched_all)
     save_json(SEEN_FILE, seen)
 
     log(f"\n조회 {checked}/{len(watchlist)}종목 · "
-        f"기록 {before} → {len(seen)}건")
+        f"창 안 공시 {total_seen_in_window}건 · 신규 {len(fetched_all)}건 "
+        f"(알림 {len(uniq)} · 잡음 {dropped}) · 기록 {before} → {len(seen)}건")
     if missing:
         log(f"[참고] DART 고유번호 미상 {len(missing)}개 — {', '.join(missing[:8])}")
     return 0
