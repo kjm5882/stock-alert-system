@@ -256,6 +256,41 @@ def e(s) -> str:
     return html.escape(str(s if s is not None else ""))
 
 
+def eulo(word: str) -> str:
+    """'로' / '으로' 를 받침에 맞춰 고른다.
+
+    '숨은 우량로' 가 되어 있었다. 받침이 없거나 ㄹ 이면 '로', 아니면 '으로'.
+    """
+    w = (word or "").strip()
+    if not w:
+        return "로"
+    ch = w[-1]
+    if not ("가" <= ch <= "힣"):
+        return "로"
+    jong = (ord(ch) - 0xAC00) % 28
+    return "로" if jong in (0, 8) else "으로"
+
+
+def signed(v) -> str:
+    """부호를 붙여 보여준다. 양수면 +, 음수면 그대로."""
+    if not isinstance(v, (int, float)):
+        return "—"
+    return f"+{v}" if v > 0 else str(v)
+
+
+def move_class(v) -> str:
+    """색은 '진입/이탈'이 아니라 '점수가 올랐나 내렸나'를 따라야 한다.
+
+    골든존에서 빠졌는데 점수는 오른 경우가 실제로 있었다 —
+    HD현대일렉트릭은 점수가 +12.8 올랐는데도 출처가 2곳에서 1곳으로
+    줄어 골든존 조건(출처 2곳 이상)을 놓쳤다. 그걸 빨간 -12.8처럼
+    보여주면 정반대로 읽힌다.
+    """
+    if not isinstance(v, (int, float)) or v == 0:
+        return ""
+    return "up" if v > 0 else "down"
+
+
 def pctile_text(v) -> str:
     """백분위를 '상위 N%' / '하위 N%' 로 읽히게. 50 이상이면 비싼 쪽이다."""
     if not isinstance(v, (int, float)):
@@ -275,16 +310,17 @@ def render_html(p: dict) -> str:
             f'<tr><td><span class="pill pill-in">진입</span></td>'
             f'<td class="nm">{e(it["종목명"])}<span class="tk">{e(it["티커"])}</span></td>'
             f'<td class="n">{num(it["점수"])}</td>'
-            f'<td class="n {"up" if (d or 0) > 0 else ""}">{("+" + str(d)) if isinstance(d, (int, float)) and d > 0 else (d if d is not None else "—")}</td>'
+            f'<td class="n {move_class(d)}">{signed(d)}</td>'
             f'<td class="sub">{e(short_label(it["이전"]))}에서</td></tr>')
     for it in p.get("골든존이탈") or []:
         d = it.get("변화")
+        lab = short_label(it["현재"])
         chg_rows.append(
             f'<tr><td><span class="pill pill-out">이탈</span></td>'
             f'<td class="nm">{e(it["종목명"])}<span class="tk">{e(it["티커"])}</span></td>'
             f'<td class="n">{num(it["점수"])}</td>'
-            f'<td class="n down">{d}</td>'
-            f'<td class="sub">{e(short_label(it["현재"]))}로</td></tr>')
+            f'<td class="n {move_class(d)}">{signed(d)}</td>'
+            f'<td class="sub">{e(lab)}{eulo(lab)}</td></tr>')
     changes = ("".join(chg_rows) or
                '<tr><td colspan="5" class="empty">골든존 구성에 변화가 없었습니다.</td></tr>')
 
