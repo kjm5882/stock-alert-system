@@ -258,20 +258,37 @@ def prune_seen(seen: dict, today: datetime) -> dict:
     return {k: v for k, v in seen.items() if str(v)[:8] >= cutoff}
 
 
-def dedupe_corrections(items: list[dict]) -> list[dict]:
-    """같은 공시의 정정본이 여러 건이면 최신 것만 남긴다.
+def is_correction(report_nm: str) -> bool:
+    """제목 앞에 대괄호가 붙으면 앞선 공시를 고쳐 쓴 것이다.
 
-    '[기재정정]단일판매ㆍ공급계약체결' 과 '단일판매ㆍ공급계약체결' 은
-    제목 앞의 대괄호만 다르다. 그 둘을 한 건으로 본다.
+    '[기재정정]', '[발행조건확정]' 등. 원본에는 대괄호가 없다.
     """
-    best = {}
+    return bool(re.match(r"^\s*\[[^\]]*\]", report_nm or ""))
+
+
+def dedupe_corrections(items: list[dict]) -> list[dict]:
+    """정정본이 원본을 대신하게 한다. 단, 제목이 같을 뿐인 별개 공시는 둘 다 남긴다.
+
+    🔴 처음엔 '같은 종목 + 같은 제목이면 한 건'으로 묶었다가 실제 건을 잃었다 —
+       알테오젠이 같은 날 「증권발행결과(자율공시)」를 두 건(…900506, …900508)
+       냈는데 하나가 사라졌다. 둘 다 원본이지 서로의 정정본이 아니다.
+
+    규칙: 같은 (티커, 대괄호 뗀 제목) 묶음 안에
+      · 정정본(대괄호)이 하나라도 있으면 → 가장 최신 1건만 남긴다
+      · 전부 원본이면 → 별개 공시로 보고 전부 남긴다
+    """
+    groups: dict[tuple, list[dict]] = {}
     for it in items:
-        base = re.sub(r"^\[[^\]]*\]\s*", "", it["공시명"]).replace(" ", "")
-        key = (it["티커"], base)
-        old = best.get(key)
-        if old is None or it["접수번호"] > old["접수번호"]:
-            best[key] = it
-    return sorted(best.values(), key=lambda x: x["접수번호"], reverse=True)
+        base = re.sub(r"^\s*\[[^\]]*\]\s*", "", it["공시명"]).replace(" ", "")
+        groups.setdefault((it["티커"], base), []).append(it)
+
+    out = []
+    for grp in groups.values():
+        if any(is_correction(x["공시명"]) for x in grp):
+            out.append(max(grp, key=lambda x: x["접수번호"]))
+        else:
+            out.extend(grp)
+    return sorted(out, key=lambda x: x["접수번호"], reverse=True)
 
 
 # ── 텔레그램 ─────────────────────────────────────────
@@ -405,7 +422,8 @@ def main():
 
     log(f"\n조회 {checked}/{len(watchlist)}종목 · "
         f"창 안 공시 {total_seen_in_window}건 · 신규 {len(fetched_all)}건 "
-        f"(알림 {len(uniq)} · 잡음 {dropped}) · 기록 {before} → {len(seen)}건")
+        f"(알림 {len(uniq)} · 잡음 {dropped} · 정정묶음 {len(found) - len(uniq)}) "
+        f"· 기록 {before} → {len(seen)}건")
     if missing:
         log(f"[참고] DART 고유번호 미상 {len(missing)}개 — {', '.join(missing[:8])}")
     return 0
