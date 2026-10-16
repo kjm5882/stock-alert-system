@@ -79,6 +79,46 @@ def num(v, suffix="", dash="—"):
     return f"{v:,.1f}{suffix}"
 
 
+def year_series(d) -> list[list]:
+    """{"2014": 29.8, ...} → [[2014, 29.8], ...] 연도 오름차순.
+
+    연도나 값이 숫자가 아니면 버린다. DART 원본에 빈 칸이 섞여 있다.
+    """
+    out = []
+    for k, v in (d or {}).items():
+        try:
+            yr = int(str(k)[:4])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(v, (int, float)) and yr >= 1990:
+            out.append([yr, round(float(v), 2)])
+    return sorted(out)
+
+
+def yearend_series(vh, ticker, key) -> list[list]:
+    """주간 시계열에서 연도별 마지막 관측만 뽑는다.
+
+    PER·시총은 matching_results 의 연도별이 2년뿐이라 추이로 못 쓴다.
+    밸류 적재분(주간 6.5년)에서 연말값을 뽑으면 같은 연도축에 올릴 수 있다.
+    올해는 아직 안 끝났으니 '가장 최근 관측'이 들어간다 — 그게 맞다.
+    """
+    if vh is None or not ticker:
+        return []
+    try:
+        s = vh.series(ticker, key)
+    except Exception:                                     # noqa: BLE001
+        return []
+    by_year = {}
+    for asof, val in s:                     # series 는 날짜 오름차순
+        try:
+            yr = int(str(asof)[:4])
+        except (TypeError, ValueError):
+            continue
+        by_year[yr] = val                   # 뒤에 오는 값이 그 해 마지막
+    rounder = (lambda v: int(v)) if key == "cap_krw" else (lambda v: round(v, 2))
+    return [[y, rounder(v)] for y, v in sorted(by_year.items())]
+
+
 def load_json(path, default):
     try:
         with open(path, encoding="utf-8") as f:
@@ -173,11 +213,12 @@ def build_payload() -> dict:
 
     # PER 자기역사 (있으면). 오늘 시가총액으로 현재값을 다시 계산한다 —
     # 적재 파일이 몇 주 묵어도 '지금'만은 오늘 것이 되게.
-    per_pos, vh_stale = {}, None
+    per_pos, vh_stale, vh_obj = {}, None, None
     try:
         sys.path.insert(0, HERE)
         from valuation_history import ValuationHistory      # noqa: PLC0415
         vh = ValuationHistory.load()
+        vh_obj = vh
         if vh.tickers:
             # 🔴 변수명 주의: 바깥의 days 는 '적재된 날짜 목록'이다.
             #    여기서 days 를 다시 쓰면 그걸 정수로 덮어써 버린다. 실제로 그랬다.
@@ -218,6 +259,16 @@ def build_payload() -> dict:
             "근거": [str(x) for x in (nr.get("근거") or [])][:2],
             "출처목록": [str(x) for x in (nr.get("출처목록") or [])],
             "언급된이름": [str(x) for x in (nr.get("언급된이름") or [])],
+            # 연도별 추이. 숫자 하나로는 '지금이 평소 대비 어디쯤'이 안 보인다.
+            # 영업이익률·부채비율은 DART 12년, 매출성장률은 11년.
+            # PER·시총은 연도별이 2년뿐이라 밸류 적재분(주간)에서 연말만 뽑아 쓴다.
+            "추이": {
+                "영업이익률": year_series((f.get("연도별") or {}).get("영업이익률")),
+                "부채비율":   year_series((f.get("연도별") or {}).get("부채비율")),
+                "매출성장률": year_series((f.get("연도별") or {}).get("매출성장률")),
+                "PER":       yearend_series(vh_obj, r.get("티커"), "per_ttm"),
+                "시총":      yearend_series(vh_obj, r.get("티커"), "cap_krw"),
+            },
         }
 
     by_label = defaultdict(int)
@@ -289,6 +340,114 @@ def move_class(v) -> str:
     if not isinstance(v, (int, float)) or v == 0:
         return ""
     return "up" if v > 0 else "down"
+
+
+def fmt_metric(v, kind: str) -> str:
+    """지표 한 개를 읽기 좋게. 시총만 조/억으로 접는다."""
+    if not isinstance(v, (int, float)):
+        return "—"
+    if kind == "시총":
+        return won(v)
+    if kind == "PER":
+        return f"{v:,.1f}배"
+    return f"{v:,.1f}%"
+
+
+def fmt_delta(cur, prev, kind: str) -> str:
+    """전년 대비 변화. 색은 칠하지 않는다.
+
+    🔴 올랐다고 좋은 게 아니다 — 부채비율 -16%p 는 좋은 것이고,
+       PER 이 내린 것도 싸졌다는 뜻이다. 방향을 빨강/초록으로 칠하면
+       지표의 절반이 거꾸로 읽힌다. 부호와 스파크라인이 이미 방향을
+       말하므로 숫자는 중립색으로 둔다.
+    """
+    if not isinstance(cur, (int, float)) or not isinstance(prev, (int, float)):
+        return ""
+    if kind == "시총":
+        if prev == 0:
+            return ""
+        pct = (cur - prev) / abs(prev) * 100
+        return f"{'+' if pct > 0 else ''}{pct:,.0f}%"
+    d = cur - prev
+    unit = "배" if kind == "PER" else "%p"
+    return f"{'+' if d > 0 else ''}{d:,.1f}{unit}"
+
+
+def sparkline(points: list, kind: str) -> str:
+    """연도별 추이 스파크라인. 외부 라이브러리 없이 인라인 SVG로 그린다.
+
+    설계 메모
+      · 가로축은 **연도 값**으로 자리를 잡는다. 빠진 해는 간격이 벌어진다 —
+        없는 데이터를 있는 척 당겨 붙이지 않기 위해서다.
+      · 값이 음수와 양수를 오가면 0선을 그린다. 영업이익률이 적자였던 해를
+        0선 없이 그리면 '그냥 낮은 해'로 보인다.
+      · 선은 본문색, 끝점만 강조색 — 색이 계열을 구분하는 게 아니라
+        '지금'을 가리킨다. 계열이 하나뿐이라 범례는 두지 않는다.
+      · 마우스를 올리면 연도와 값이 뜬다(각 해마다 보이지 않는 칸 + title).
+        자바스크립트 없이 동작해서 파일을 그냥 열어도 된다.
+    """
+    pts = [(y, v) for y, v in (points or []) if isinstance(v, (int, float))]
+    if len(pts) < 2:
+        return '<div class="spark-none">추이 없음</div>'
+
+    W, H, PAD_X, PAD_Y = 160.0, 42.0, 5.0, 6.0
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x0, x1 = min(xs), max(xs)
+    lo, hi = min(ys), max(ys)
+    if hi == lo:                       # 값이 전부 같으면 납작한 선
+        hi, lo = hi + 1, lo - 1
+    span = hi - lo
+
+    def px(y):
+        if x1 == x0:
+            return W / 2
+        return PAD_X + (y - x0) / (x1 - x0) * (W - 2 * PAD_X)
+
+    def py(v):
+        return PAD_Y + (hi - v) / span * (H - 2 * PAD_Y)
+
+    coords = [(px(y), py(v)) for y, v in pts]
+    path = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+
+    zero = ""
+    if lo < 0 < hi:
+        zy = py(0)
+        zero = (f'<line x1="0" y1="{zy:.1f}" x2="{W}" y2="{zy:.1f}" '
+                f'class="spark-zero"/>')
+
+    # 각 해마다 보이지 않는 칸 — 마우스를 올리면 연도·값이 뜬다
+    step = (W - 2 * PAD_X) / max(1, len(pts) - 1)
+    hits = []
+    for (y, v), (cx, _cy) in zip(pts, coords):
+        hits.append(
+            f'<rect x="{max(0, cx - step / 2):.1f}" y="0" '
+            f'width="{step:.1f}" height="{H}" fill="transparent">'
+            f'<title>{y}년 · {e(fmt_metric(v, kind))}</title></rect>')
+
+    ex, ey = coords[-1]
+    return (
+        f'<svg class="spark" viewBox="0 0 {W:.0f} {H:.0f}" role="img" '
+        f'aria-label="{e(x0)}년부터 {e(x1)}년까지 추이">'
+        f'{zero}'
+        f'<path d="{path}" class="spark-line"/>'
+        f'<circle cx="{ex:.1f}" cy="{ey:.1f}" r="4" class="spark-dot"/>'
+        f'{"".join(hits)}'
+        f'</svg>'
+        f'<div class="spark-ax"><span>{x0}</span><span>{x1}</span></div>')
+
+
+def metric_tile(label: str, points: list, current, kind: str) -> str:
+    """지표 한 칸 — 이름 · 현재값 · 전년비 · 스파크라인."""
+    pts = [(y, v) for y, v in (points or []) if isinstance(v, (int, float))]
+    cur = current if isinstance(current, (int, float)) else (pts[-1][1] if pts else None)
+    delta = fmt_delta(cur, pts[-2][1], kind) if len(pts) >= 2 else ""
+    return (f'<div class="mt">'
+            f'<div class="mt-h"><span class="mt-l">{e(label)}</span>'
+            f'<b class="mt-v">{e(fmt_metric(cur, kind))}</b></div>'
+            f'{sparkline(points, kind)}'
+            f'<div class="mt-d">{e(delta)}</div>'
+            f'</div>')
 
 
 def pctile_text(v) -> str:
@@ -368,6 +527,15 @@ def render_html(p: dict) -> str:
                 alias = (f'<div class="said-alias">언급된 이름: {e(" / ".join(names[:3]))}</div>'
                          if names else "")
                 said = f'<div class="said">{head}{body}{alias}</div>'
+
+            tr = d.get("추이") or {}
+            charts = "".join([
+                metric_tile("영업이익률", tr.get("영업이익률"), d["영업이익률"], "%"),
+                metric_tile("부채비율",   tr.get("부채비율"),   d["부채비율"],   "%"),
+                metric_tile("매출성장",   tr.get("매출성장률"), d["매출성장률"], "%"),
+                metric_tile("PER(TTM)",  tr.get("PER"),       d.get("PERTTM"), "PER"),
+                metric_tile("시가총액",   tr.get("시총"),       d["시총"],       "시총"),
+            ])
             out.append(f"""<article class="card">
   <header>
     <h3>{e(d["종목명"])}<span class="tk">{e(d["티커"])}</span></h3>
@@ -379,13 +547,10 @@ def render_html(p: dict) -> str:
     <div class="bar nv"><span>내러 {num(d["내러"])} <em>출처 {d["출처수"]}</em></span>
       <i style="width:{min(100, max(0, d["내러"] or 0)):.0f}%"></i></div>
   </div>
+  <div class="metrics">{charts}</div>
   <dl class="facts">
-    <div><dt>영업이익률</dt><dd>{num(d["영업이익률"], "%")}</dd></div>
-    <div><dt>부채비율</dt><dd>{num(d["부채비율"], "%")}</dd></div>
-    <div><dt>매출성장</dt><dd>{num(d["매출성장률"], "%")}</dd></div>
     <div><dt>배당</dt><dd>{num(d["배당률"], "%")}</dd></div>
     <div><dt>유통물량</dt><dd>{num(d["유통비율"], "%")}</dd></div>
-    <div><dt>시총</dt><dd>{won(d["시총"])}</dd></div>
   </dl>
   {per}
   {said}
@@ -475,7 +640,7 @@ td.dim {{ color:var(--ink-3); }}
 .pill-out {{ background:var(--down-bg); color:var(--down); }}
 .empty {{ color:var(--ink-3); text-align:center; padding:18px; font-size:.88rem; }}
 .scroll {{ overflow-x:auto; }}
-.cards {{ display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); }}
+.cards {{ display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); }}
 .card {{ background:var(--panel); border:1px solid var(--line); border-radius:10px;
   padding:14px 15px; min-width:0; }}
 .card header {{ display:flex; justify-content:space-between; align-items:baseline;
@@ -492,7 +657,30 @@ td.dim {{ color:var(--ink-3); }}
 .bar span {{ position:relative; font-size:.74rem; padding:0 8px; line-height:20px;
   display:block; color:var(--ink-2); }}
 .bar em {{ font-style:normal; color:var(--ink-3); font-size:.69rem; }}
-.facts {{ display:grid; grid-template-columns:repeat(3,1fr); gap:7px 4px; margin:0 0 10px; }}
+.metrics {{ display:grid; grid-template-columns:repeat(2,1fr); gap:10px 12px;
+  margin:0 0 11px; }}
+.mt {{ min-width:0; }}
+.mt-h {{ display:flex; justify-content:space-between; align-items:baseline;
+  gap:6px; margin-bottom:2px; }}
+.mt-l {{ font-size:.68rem; color:var(--ink-3); letter-spacing:.02em;
+  white-space:nowrap; }}
+.mt-v {{ font-family:var(--mono); font-size:.82rem; font-weight:600;
+  font-variant-numeric:tabular-nums; white-space:nowrap; }}
+.spark {{ display:block; width:100%; height:auto; overflow:visible; }}
+.spark-line {{ fill:none; stroke:var(--ink-2); stroke-width:2;
+  stroke-linejoin:round; stroke-linecap:round; vector-effect:non-scaling-stroke; }}
+.spark-dot {{ fill:var(--amber); stroke:var(--panel); stroke-width:1.5; }}
+.spark-zero {{ stroke:var(--line); stroke-width:1; stroke-dasharray:2 3;
+  vector-effect:non-scaling-stroke; }}
+.spark-none {{ font-size:.68rem; color:var(--ink-3); padding:12px 0 11px;
+  text-align:center; }}
+.spark-ax {{ display:flex; justify-content:space-between;
+  font-family:var(--mono); font-size:.6rem; color:var(--ink-3); margin-top:1px; }}
+/* 전년비는 중립색 고정 — 방향이 곧 좋고 나쁨이 아니다(fmt_delta 주석 참고).
+   .up/.down 과 우선순위가 같아 우연히 회색이던 것을 의도로 못박는다. */
+.mt-d, .mt-d.up, .mt-d.down {{ font-family:var(--mono); font-size:.68rem;
+  color:var(--ink-3); margin-top:1px; min-height:.95rem; }}
+.facts {{ display:grid; grid-template-columns:repeat(2,1fr); gap:7px 4px; margin:0 0 10px; }}
 .facts div {{ min-width:0; }}
 .facts dt {{ font-size:.68rem; color:var(--ink-3); letter-spacing:.02em; }}
 .facts dd {{ margin:0; font-family:var(--mono); font-size:.84rem;
