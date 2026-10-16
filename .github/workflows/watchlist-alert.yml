@@ -1,0 +1,55 @@
+name: 보유종목 공시 알림
+
+# 내가 들고 있는 종목에 중요 공시가 뜨면 바로 알린다.
+# 공시는 장중에 나온다 — 하루 1회로는 수주 공시를 다음날 아침에 알게 된다.
+#
+# 평일 KST 08:00 ~ 18:00, 1시간 간격.
+#   UTC 23시(일~목) = KST 08시(월~금)
+#   UTC 00~09시(월~금) = KST 09~18시(월~금)
+# 분을 10으로 둔 건 정각에 몰리는 지연을 피하기 위해서다.
+on:
+  schedule:
+    - cron: "10 23 * * 0-4"
+    - cron: "10 0-9 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 여러 번이 겹쳐 돌면 seen 파일이 충돌한다. 앞선 실행을 기다린다.
+concurrency:
+  group: watchlist-alert
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: pip install requests
+
+      - name: 공시 확인
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/watchlist_alert.py
+
+      - name: 본 공시 기록 저장
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/watchlist_seen.json data/corp_codes.xml 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "변경 없음 — 커밋 생략"
+          else
+            git commit -m "보유종목 공시 기록 갱신"
+            # 1시간마다 도는 작업이라 push 충돌이 날 수 있다. 한 번 당겨서 재시도.
+            git push || (git pull --rebase && git push)
+          fi
