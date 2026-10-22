@@ -1,0 +1,31 @@
+name: 티앤엘 핵심지표 이벤트 알림
+
+on:
+  schedule:
+    - cron: "30 23 * * *"   # 매일 08:30 KST
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: 티앤엘 이벤트 확인 및 알림
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python src/tnl_monitor.py
+      - name: 상태 저장
+        run: |
+          git config user.name "stock-alert-bot"
+          git config user.email "actions@github.com"
+          git add data/tnl_seen.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "chore: 티앤엘 이벤트 상태 갱신"
+          git push || true
