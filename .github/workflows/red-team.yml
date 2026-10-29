@@ -1,0 +1,64 @@
+name: 레드팀 (반대 증거)
+
+# 주간리포트 바로 앞에서 돈다. red_team.json 을 먼저 만들어 두면
+# 리포트가 그걸 읽어서 카드에 붙인다.
+#   주간리포트: "25 0 * * 6" (토 09:25 KST) → 레드팀은 그 20분 전
+# 수동 실행으로 먼저 결과만 보는 것도 가능하다.
+
+on:
+  schedule:
+    - cron: "5 0 * * 6"        # 토 09:05 KST
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "한 종목만 자세히 보기 (예: 196170). 비우면 전 종목"
+        required: false
+        default: ""
+      frequency:
+        description: "검사별 발동 빈도도 출력 (문턱값 점검용)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: red-team
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 레드팀은 표준 라이브러리만 쓴다. 외부 호출도 없다.
+      # 전부 저장소 안의 data/*.json 을 읽어서 계산한다.
+      - name: 레드팀 실행
+        run: |
+          python scripts/red_team.py \
+            ${{ github.event.inputs.ticker }} \
+            ${{ github.event.inputs.frequency == 'true' && '--빈도' || '' }}
+
+      - name: 결과 커밋
+        if: github.event.inputs.ticker == ''
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/red_team.json
+          if git diff --cached --quiet; then
+            echo "변경 없음"
+            exit 0
+          fi
+          git commit -m "레드팀 갱신 $(date -u +%Y-%m-%d)"
+          # 주간리포트 워크플로와 같은 시각에 돌 수 있어서 충돌을 재시도한다
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            echo "push 충돌, 재시도 $i"
+            sleep 5
+          done
+          exit 1
