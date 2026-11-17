@@ -37,6 +37,22 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+# 레드팀(반대 증거). red_team.py 가 같은 scripts/ 폴더에 있어 그대로 잡힌다.
+# 🔴 없어도 리포트는 나와야 한다. red_team.py 를 아직 안 올렸거나 깨졌을 때
+#    주간 리포트까지 같이 죽으면 안 된다 — 매주 나오던 게 안 나오는 쪽이
+#    블록이 안 붙는 것보다 훨씬 나쁘다. 그래서 import 를 감싸고,
+#    실패하면 아무것도 안 그리는 빈 함수로 대체한다.
+try:
+    from red_team import load_findings, render_block
+except Exception as _rt_exc:                                   # noqa: BLE001
+    print(f"[레드팀 생략] {type(_rt_exc).__name__}: {str(_rt_exc)[:80]}", flush=True)
+
+    def load_findings(*_a, **_k):
+        return {}
+
+    def render_block(*_a, **_k):
+        return ""
+
 KST = timezone(timedelta(hours=9))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -495,6 +511,8 @@ def render_html(p: dict) -> str:
     def stock_table(items, show_owner=True):
         if not items:
             return '<p class="empty">해당 종목이 없습니다.</p>'
+        # 레드팀 지적. 파일이 없으면 빈 dict 라 카드는 지금과 똑같이 나온다.
+        red = load_findings()
         out = []
         for d in items:
             per = f'<p class="per">{e(d["PER표시"]) or "—"}</p>'
@@ -555,6 +573,7 @@ def render_html(p: dict) -> str:
   {per}
   {said}
   {'<p class="tags">' + "".join(extra) + '</p>' if extra else ''}
+  {render_block(red, d["티커"])}
 </article>""")
         return '<div class="cards">' + "".join(out) + "</div>"
 
